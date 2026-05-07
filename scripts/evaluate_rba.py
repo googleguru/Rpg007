@@ -446,6 +446,37 @@ def plot_results(summary: dict, output_dir: str):
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 
+def run_sky130_verification(def_file: str, output_dir: str,
+                            pdk_root: str = "", run_magic: bool = False,
+                            run_klayout: bool = False) -> int:
+    """
+    Run Sky130 PDK DRC verification on a routed DEF.
+    Returns the number of violations found (0 = clean).
+    Imports sky130_verification from the same scripts directory.
+    """
+    script = Path(__file__).parent / "sky130_verification.py"
+    if not script.exists():
+        print("[Sky130] sky130_verification.py not found — skipping")
+        return -1
+
+    cmd = [sys.executable, str(script),
+           "--def", def_file,
+           "--output", str(Path(output_dir) / "sky130_drc")]
+    if pdk_root:
+        cmd += ["--pdk", pdk_root]
+    if run_magic:
+        cmd.append("--magic")
+    if run_klayout:
+        cmd.append("--klayout")
+
+    try:
+        result = subprocess.run(cmd, capture_output=False, timeout=600)
+        return result.returncode  # 0 = clean, 1 = violations found
+    except subprocess.TimeoutExpired:
+        print("[Sky130] Verification timed out")
+        return -1
+
+
 def main():
     parser = argparse.ArgumentParser(description="RBA-TritonRoute Evaluation")
     parser.add_argument("--benchmarks",  required=True,
@@ -463,6 +494,15 @@ def main():
                         help="Skip baseline runs (use existing results)")
     parser.add_argument("--benchmarks_subset", nargs="*",
                         help="Run only these benchmark names")
+    # Sky130 PDK verification options
+    parser.add_argument("--sky130_verify", action="store_true",
+                        help="Run Sky130 PDK DRC on each RBA output DEF")
+    parser.add_argument("--sky130_pdk", default=os.environ.get("SKY130_PDK", ""),
+                        help="Path to sky130A PDK root (or set SKY130_PDK env)")
+    parser.add_argument("--sky130_magic",   action="store_true",
+                        help="Also run Magic VLSI full DRC during verification")
+    parser.add_argument("--sky130_klayout", action="store_true",
+                        help="Also run KLayout DRC deck during verification")
     args = parser.parse_args()
 
     Path(args.output).mkdir(parents=True, exist_ok=True)
@@ -500,6 +540,21 @@ def main():
             rba_results.append(rb)
             print(f"      DRC={rb.drc_count} via={rb.via_count} "
                   f"WL={rb.wirelength:.0f} t={rb.runtime_sec:.1f}s")
+
+            if args.sky130_verify and rb.success:
+                out_dir = Path(args.output) / bench.name / "rba" / str(run_id)
+                best_def = str(out_dir / "abc_via_optimized.def")
+                if not Path(best_def).exists():
+                    best_def = str(out_dir / "iter_best_routed.def")
+                if Path(best_def).exists():
+                    print("    [Sky130 Verify]")
+                    run_sky130_verification(
+                        best_def,
+                        str(out_dir),
+                        pdk_root=args.sky130_pdk,
+                        run_magic=args.sky130_magic,
+                        run_klayout=args.sky130_klayout,
+                    )
 
     # Save raw results
     results_json = Path(args.output) / "raw_results.json"
