@@ -1,0 +1,44 @@
+{
+  "_comment": "RBA configuration tuned for ISPD 2018 benchmarks (ispd18_test1–10)",
+  "_note": "PSO oracle budget is reduced for large designs (>50k nets) to bound runtime",
+
+  "outer_iters": 5,
+  "threads": 8,
+  "openroad_bin": "openroad",
+  "output_dir": "./rba_output",
+
+  "ga": {
+    "population":     50,
+    "generations":    80,
+    "crossover_rate": 0.85,
+    "mutation_rate":  0.04,
+    "tournament_k":   5,
+    "elite_count":    5
+  },
+
+  "aco": {
+    "n_ants":     20,
+    "iterations": 40,
+    "alpha":      1.0,
+    "beta":       2.5,
+    "rho":        0.08,
+    "Q":          100.0,
+    "tau_min":    1e-4,
+    "tau_max":    10.0,
+    "drc_penalty": 0.4
+  },
+
+  "pso": {
+    "n_particles": 20,
+    "iterations":  30,
+    "omega":       0.729,
+    "c1":          1.494,
+    "c2":          1.494
+  },
+
+  "abc": {
+    "n_bees":    20,
+    "max_cycles": 80,
+    "limit":     15
+  }
+}

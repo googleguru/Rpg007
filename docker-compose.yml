@@ -1,0 +1,31 @@
+version: "3.9"
+
+services:
+  rba_gui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rba_router:latest
+    container_name: rba_router_gui
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./results:/opt/rba_router/results
+      - ./benchmarks:/opt/rba_router/benchmarks:ro
+    environment:
+      - STREAMLIT_THEME_BASE=dark
+      - RBA_OUTPUT_DIR=/opt/rba_router/results
+    restart: unless-stopped
+    command: >
+      streamlit run gui/rba_gui.py
+      --server.port=8501
+      --server.address=0.0.0.0
+      --server.headless=true
+
+  rba_simulation:
+    image: rba_router:latest
+    container_name: rba_simulation
+    volumes:
+      - ./results:/opt/rba_router/results
+    command: python3 simulation/rba_simulation_engine.py --all-benchmarks
+    profiles: ["simulate"]
