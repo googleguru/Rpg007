@@ -16,6 +16,7 @@
     "delta_pct": {"drc_count": 0.0, "via_count": 0.0, "wirelength": 0.0, "runtime_sec": 0.0},
     "equal_runtime": {},
     "equal_compute_budget": {},
-    "convergence": {}
+    "convergence": {},
+    "notes": "Placeholder entry. Replace with real OpenROAD/TritonRoute measurements before using this report in a manuscript."
   }
 ]

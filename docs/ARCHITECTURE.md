@@ -178,18 +178,20 @@ x ← x + v
 
 ## 5. Evaluation Methodology
 
-The evaluation flow in this repository is designed to satisfy the manuscript requirements listed below:
+The evaluation flow in this repository is designed as a reproducible analysis scaffold for the manuscript workflow:
 
-- Report absolute DRC counts, via counts, wirelength, runtime, and contest score for every benchmark.
-- Compare baseline TritonRoute and RBA-TritonRoute under identical wall-clock and equal-compute budgets.
-- Report multi-seed summaries with best, worst, mean, and standard deviation for each benchmark.
-- Add convergence analysis from the iteration-wise metrics emitted by the orchestrator.
+- Report absolute DRC counts, via counts, wirelength, runtime, and contest score for every benchmark when a real run is available.
+- Compare baseline TritonRoute and RBA-TritonRoute under identical wall-clock and equal-compute budgets once paired measurements exist.
+- Report multi-seed summaries with best, worst, mean, and standard deviation for each benchmark when the harness is executed against real data.
+- Add convergence analysis from the iteration-wise metrics emitted by the orchestrator for real runs.
 - Preserve provenance data for OpenROAD/TritonRoute version and Git commit used for each experiment.
 
 The analysis script [scripts/evaluate_rba.py](../scripts/evaluate_rba.py) writes:
 - [results/experiment_report.json](../results/experiment_report.json) for benchmark-level absolute statistics and deltas,
 - [results/convergence_summary.json](../results/convergence_summary.json) for iteration-wise convergence traces,
 - and [results/summary.csv](../results/summary.csv) for a compact table suitable for manuscript inclusion.
+
+At the current repository state, these outputs are scaffolded placeholders rather than measurements from a real OpenROAD/TritonRoute run. The repository therefore documents the workflow and the data schema without claiming that the numbers have been reproduced from live routing results.
 
 ### 5.1 Experimental Comparisons
 

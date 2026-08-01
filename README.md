@@ -13,7 +13,7 @@
 **A bio-inspired optimization layer over TritonRoute/OpenROAD detailed routing**  
 *Genetic Algorithms · Ant Colony Optimization · Particle Swarm · Artificial Bee Colony*
 
-This repository now includes a reproducible evaluation workflow for absolute DRC counts, equal-runtime and equal-compute comparisons, multi-seed summaries, convergence analysis, contest-score reporting, and a documented OpenROAD/TritonRoute provenance package.
+This repository now includes a reproducible evaluation scaffold for absolute DRC counts, equal-runtime and equal-compute comparisons, multi-seed summaries, convergence analysis, contest-score reporting, and a documented OpenROAD/TritonRoute provenance package. The implementation is a research prototype: the C++ modules, Python bridge, and evaluation workflow are present, but the repository still lacks verified measurements from a real OpenROAD/TritonRoute run. The files under results/ should therefore be treated as scaffolded placeholders rather than as measured routing data.
 
 ---
 
@@ -21,21 +21,21 @@ This repository now includes a reproducible evaluation workflow for absolute DRC
 
 ## Overview
 
-**RBA-TritonRoute** wraps the [TritonRoute](https://github.com/The-OpenROAD-Project/TritonRoute) detailed router with an adaptive bio-inspired decision layer that learns from DRC markers and congestion maps at each routing iteration. It replaces TritonRoute's static cost functions and fixed net-ordering heuristics with four self-tuning optimization modules that collectively reduce DRC violations by **~26%** and via count by **~6%** across the full ISPD 2018+2019 benchmark suite.
+**RBA-TritonRoute** wraps the [TritonRoute](https://github.com/The-OpenROAD-Project/TritonRoute) detailed router with an adaptive bio-inspired decision layer that learns from DRC markers and congestion maps at each routing iteration. The codebase currently contains the routing framework, optimizer modules, and evaluation scaffolding, but it does not yet include a verified end-to-end run of TritonRoute/OpenROAD on real benchmarks. The repository therefore provides a prototype and reporting scaffold, not a validated measurement set.
 
-The framework now includes full **SkyWater Sky130A PDK** support — technology-aware routing configuration, post-route DRC verification against sky130 design rules (width, spacing, min area, via enclosure), and a 6-figure visual verification dashboard.
+The framework includes **SkyWater Sky130A PDK** configuration and a Python-based verification checker for width, spacing, minimum-area, and via-enclosure checks, but those checks still require a real PDK/toolchain run to produce measured DRC results.
 
-### Key Results — 19 ISPD Benchmarks · 5 Independent Runs Each
+### Current evidence status
 
-| Metric | Baseline TritonRoute | RBA-TritonRoute | Improvement |
-|:---|:---:|:---:|:---:|
-| DRC Violations | absolute count | absolute count | **reduction** |
-| Via Count | absolute count | absolute count | **reduction** |
-| Wirelength | absolute count | absolute count | **delta** |
-| Runtime | absolute seconds | absolute seconds | **overhead** |
-| Contest Score | absolute score | absolute score | **gain/loss** |
+| Item | Status |
+|:---|:---|
+| C++ optimizer modules and orchestration | Implemented in the repository |
+| Evaluation/reporting scaffold | Implemented |
+| Measured OpenROAD/TritonRoute results | Not present in this repository |
+| Provenance for real router runs | Not captured yet |
+| Docker image router binary | OpenROAD stub only |
 
-The evaluation script now writes a structured report with absolute values for each benchmark, plus equal-runtime and equal-compute comparisons, best/worst/mean/std summaries, and convergence traces. See [scripts/evaluate_rba.py](scripts/evaluate_rba.py) and [results/summary.csv](results/summary.csv) for the generated tables.
+The evaluation script writes structured report files when run, but those outputs should be interpreted as scaffolded summaries until a real routing harness is executed. See [scripts/evaluate_rba.py](scripts/evaluate_rba.py) and [results/experiment_report.json](results/experiment_report.json) for the current placeholder-oriented output format.
 
 ---
 
@@ -52,8 +52,8 @@ The repository supports the requested evaluation package:
 ### Reproducibility Notes
 
 - The Docker image captures the Python/plotting stack and a reproducible execution environment.
-- The evaluation script writes [results/experiment_report.json](results/experiment_report.json) and [results/convergence_summary.json](results/convergence_summary.json) when run.
-- For full OpenROAD/TritonRoute experiments, record the exact binary version and Git commit used in the run log, then preserve the binary path and Tcl scripts in the results directory.
+- The evaluation script writes [results/experiment_report.json](results/experiment_report.json) and [results/convergence_summary.json](results/convergence_summary.json) when run, but the current repository state does not include a real routing run.
+- For full OpenROAD/TritonRoute experiments, record the exact binary version and Git commit used in the run log, preserve the binary path and Tcl scripts in the results directory, and avoid treating placeholder outputs as measured data.
 
 ---
 
@@ -71,7 +71,7 @@ LEF/DEF + Route Guides
 │               2-opt mutation · tournament selection         │
 │                         │ ordered net list                  │
 │  Phase 2 ──► PSO Cost Tuning                                │
-│               30 particles × 40 iters · 6D weight space     │
+│               20 particles × 30 iterations · 6D weight space │
 │               w_wire, w_via, w_cong, w_drc_hist …           │
 │                         │ optimised cost weights            │
 │  Phase 3 ──► TritonRoute detailed_route                     │

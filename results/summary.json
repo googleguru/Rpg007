@@ -1,6 +1,24 @@
 [
   {
-    "benchmark": "ispd18_test1",
+    "benchmark": "placeholder",
+    "baseline_drc": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0},
+    "rba_drc": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0},
+    "drc_improvement_pct": 0.0,
+    "baseline_via": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0},
+    "rba_via": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0},
+    "via_improvement_pct": 0.0,
+    "baseline_wl": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0},
+    "rba_wl": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0},
+    "wl_change_pct": 0.0,
+    "baseline_rt": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0},
+    "rba_rt": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0},
+    "runtime_overhead_pct": 0.0,
+    "abc_vias_removed": 0,
+    "abc_via_pct": 0.0,
+    "ga_improvement_pct": 0.0,
+    "notes": "Placeholder summary. Replace with real OpenROAD/TritonRoute measurements before using this file in a manuscript."
+  }
+]
     "baseline_drc": {
       "mean": 4184.4,
       "std": 64.53092281999382,

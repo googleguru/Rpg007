@@ -51,8 +51,8 @@ RUN cmake -B build -G Ninja \
     && cmake --build build -j$(nproc) \
     || echo "[Docker] C++ build skipped (nlohmann/json or OpenROAD not found — GUI-only mode)"
 
-# ── OpenROAD stub (replaced by real binary if available) ──────────────────
-RUN printf '#!/usr/bin/env python3\nimport sys\nprint("[OpenROAD stub] Use full OpenROAD build for production")\n' \
+# ── OpenROAD stub (real router execution still requires a full OpenROAD/TritonRoute installation) ──────────────────
+RUN printf '#!/usr/bin/env python3\nimport sys\nprint("[OpenROAD stub] This container does not provide a real OpenROAD/TritonRoute binary; install one for production routing runs")\n' \
     > /usr/local/bin/openroad && chmod +x /usr/local/bin/openroad
 
 # ── Entrypoint ────────────────────────────────────────────────────────────

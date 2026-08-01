@@ -248,6 +248,8 @@ def capture_provenance(output_dir: str, openroad_bin: str = "openroad") -> Dict[
     provenance: Dict[str, Any] = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "python_version": sys.version.split()[0],
+        "source": "evaluation scaffold",
+        "notes": "Real router measurements are not present in this repository snapshot.",
     }
 
     try:
@@ -280,6 +282,30 @@ def write_experiment_report(report: List[Dict[str, Any]], output_dir: str, conve
         conv_path = output / "convergence_summary.json"
         with open(conv_path, "w") as handle:
             json.dump(convergence_summaries, handle, indent=2)
+
+    if not report:
+        placeholder = [{
+            "benchmark": "placeholder",
+            "baseline": {
+                "drc_count": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []},
+                "via_count": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []},
+                "wirelength": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []},
+                "runtime_sec": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []},
+            },
+            "rba": {
+                "drc_count": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []},
+                "via_count": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []},
+                "wirelength": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []},
+                "runtime_sec": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []},
+            },
+            "delta_pct": {"drc_count": 0.0, "via_count": 0.0, "wirelength": 0.0, "runtime_sec": 0.0},
+            "equal_runtime": {},
+            "equal_compute_budget": {},
+            "convergence": {},
+        }]
+        with open(report_path, "w") as handle:
+            json.dump(placeholder, handle, indent=2)
+        return
 
     summary_rows = []
     for entry in report:
