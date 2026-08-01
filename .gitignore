@@ -23,7 +23,7 @@ venv/
 
 # Results (generated — do not track large JSON/PDF)
 results/full_results.json
-results/plots/*.pdf
+simulation/figures/*.pdf
 
 # IDE
 .vscode/

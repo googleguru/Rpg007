@@ -18,7 +18,7 @@ Figures produced
 Usage
 -----
   python3 sky130_plot_verification.py [--results_dir ./sky130_verify]
-                                      [--output ./results/plots]
+                                      [--output ./simulation/figures]
 
 Dependencies
 ------------
@@ -87,7 +87,7 @@ SKY130_RULES = {
     "met5": {"min_width": 1600, "min_spacing": 1600, "min_area": 4000000 },
 }
 
-OUTPUT_DIR = Path("./results/plots")
+OUTPUT_DIR = Path("./simulation/figures")
 
 
 # ─── Synthetic data generation ────────────────────────────────────────────────
@@ -726,7 +726,7 @@ def main():
     parser.add_argument("--results_dir", default="",
                         help="Directory containing sky130_drc_result.json files "
                              "(uses synthetic data if omitted)")
-    parser.add_argument("--output", default="./results/plots",
+    parser.add_argument("--output", default="./simulation/figures",
                         help="Output directory for PNG figures")
     parser.add_argument("--seed", type=int, default=42,
                         help="RNG seed for synthetic data")

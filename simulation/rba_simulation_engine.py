@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-RBA Simulation Engine
-=====================
-Physics-accurate simulation of the RBA-TritonRoute routing framework.
-Models real algorithm dynamics: GA convergence, ACO pheromone evolution,
-PSO cost tuning, ABC via minimization — all calibrated against published
-ISPD 2018/2019 routing contest result data.
+RBA Synthetic Placeholder Data Generator
+=========================================
+NOT a simulation of routing physics and NOT a measurement of any real
+OpenROAD/TritonRoute run. This is a schema/plot exerciser: it draws RNG
+values from hardcoded per-benchmark profiles shaped to land in the numeric
+ranges reported by published ISPD 2018/2019 contest results, so that the
+JSON schema, plotting code, and GUI have realistic-looking data to render
+before a real routing harness exists.
 
-Produces full JSON result files consumed by the GUI and plotting system.
+Produces placeholder JSON result files consumed by the GUI and plotting
+system. Treat every number this script emits as synthetic, not measured.
 """
 
 import json

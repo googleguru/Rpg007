@@ -1,0 +1,22 @@
+name: Unit Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ctest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (OpenROAD linkage disabled — unit tests only)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DRBA_ENABLE_TESTS=ON -DRBA_OPENROAD_LINK=OFF
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Run GoogleTest suite
+        run: ctest --test-dir build --output-on-failure

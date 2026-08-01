@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-Generate all publication-quality visual results for the RBA-TritonRoute framework.
-Produces 12 figures covering all aspects of the algorithm comparison and analysis.
+Generate all visual results for the RBA-TritonRoute framework from the output of
+rba_simulation_engine.py. Produces 12 figures covering the algorithm comparison
+and analysis — plotting code only; the underlying data is synthetic placeholder
+data, not a measured routing run. See rba_simulation_engine.py.
 """
 import json
 import math
@@ -39,7 +41,7 @@ ABC_COLOR = "#FEC44F"
 IMPROVE_COLOR = "#238443"
 WORSEN_COLOR  = "#CB181D"
 
-OUTPUT_DIR = Path("./results/plots")
+OUTPUT_DIR = Path("./simulation/figures")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
