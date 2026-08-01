@@ -6,6 +6,7 @@
 //              [--baseline-only] [--config <rba_config.json>]
 
 #include "rba_orchestrator.h"
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <unordered_map>

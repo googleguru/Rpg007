@@ -20,6 +20,10 @@ RBAOrchestrator::RBAOrchestrator(const RBAConfig& cfg)
 RoutingSnapshot RBAOrchestrator::run_baseline(const std::string& lef,
                                                const std::string& def,
                                                const std::string& guide) {
+    current_lef_file_ = lef;
+    current_def_file_ = def;
+    current_guide_file_ = guide;
+
     std::cout << "\n[Orchestrator] === BASELINE RUN ===\n";
     bridge_.load_design(lef, def, guide);
 
@@ -45,6 +49,10 @@ OrchestratorResult RBAOrchestrator::run(const std::string& lef,
                                          const std::string& def,
                                          const std::string& guide,
                                          const std::string& timing_rpt) {
+    current_lef_file_ = lef;
+    current_def_file_ = def;
+    current_guide_file_ = guide;
+
     auto flow_start = std::chrono::steady_clock::now();
     std::cout << "\n[Orchestrator] === RBA-TRITONROUTE FLOW ===\n";
 
@@ -161,9 +169,9 @@ CostWeights RBAOrchestrator::run_pso_phase(const std::vector<net_id>& net_order)
         bridge_.inject_net_order(net_order);
 
         TritonRunConfig rcfg;
-        rcfg.lef_file    = lef_file_;  // stored from load_design
-        rcfg.def_file    = def_file_;
-        rcfg.guide_file  = guide_file_;
+        rcfg.lef_file    = current_lef_file_;
+        rcfg.def_file    = current_def_file_;
+        rcfg.guide_file  = current_guide_file_;
         rcfg.output_def  = cfg_.output_dir + "/pso_eval_" +
                            std::to_string(eval_count) + ".def";
         rcfg.drc_report  = cfg_.output_dir + "/pso_eval_" +
@@ -192,9 +200,9 @@ RoutingSnapshot RBAOrchestrator::run_and_read(const std::vector<net_id>& net_ord
     bridge_.inject_cost_weights(weights);
 
     TritonRunConfig rcfg;
-    rcfg.lef_file    = lef_file_;
-    rcfg.def_file    = def_file_;
-    rcfg.guide_file  = guide_file_;
+    rcfg.lef_file    = current_lef_file_;
+    rcfg.def_file    = current_def_file_;
+    rcfg.guide_file  = current_guide_file_;
     rcfg.output_def  = cfg_.output_dir + "/iter_" +
                        std::to_string(iteration) + "_routed.def";
     rcfg.drc_report  = cfg_.output_dir + "/iter_" +
@@ -308,7 +316,7 @@ int RBAOrchestrator::run_abc_phase(const std::string& routed_def,
 
         // Run OpenROAD check_drc
         std::string cmd = cfg_.openroad_bin + " -exit -no_init -c "
-            " \"read_lef " + lef_file_ + "; read_def " + tmp_def
+            " \"read_lef " + current_lef_file_ + "; read_def " + tmp_def
             + "; check_drc -output " + tmp_def + ".drc.rpt\" 2>/dev/null";
         std::system(cmd.c_str());
 
@@ -360,8 +368,5 @@ void RBAOrchestrator::write_metrics_csv(const OrchestratorResult& result,
     }
     std::cout << "[Orchestrator] Metrics written to " << path << "\n";
 }
-
-// Stored from load_design — members needed by oracle lambda
-std::string lef_file_, def_file_, guide_file_;
 
 } // namespace rba

@@ -53,6 +53,9 @@ private:
     std::vector<Net> nets_;
     CongestionMap   cong_map_;
     CostWeights     current_weights_;
+    std::string     current_lef_file_;
+    std::string     current_def_file_;
+    std::string     current_guide_file_;
 
     // Per-iteration state
     std::vector<DRCMarker>   last_drc_markers_;

@@ -25,8 +25,15 @@ std::vector<Route> ABCViaMinimizer::run(std::vector<Route> routes,
               << candidates_.size() << " via candidates, "
               << sources_.size() << " food sources\n";
 
-    FoodSource best_source = sources_[0];
-    double best_fit = compute_fitness(apply_source(routes, best_source), validator);
+    FoodSource best_source;
+    double best_fit = -1.0;
+    for (auto& src : sources_) {
+        src.fitness = compute_fitness(apply_source(routes, src), validator);
+        if (src.fitness > best_fit) {
+            best_fit = src.fitness;
+            best_source = src;
+        }
+    }
 
     for (int cycle = 0; cycle < cfg_.abc_max_cycles; ++cycle) {
         employed_bee_phase(routes, validator);
@@ -88,7 +95,7 @@ void ABCViaMinimizer::init_sources(int n_sources) {
                 src.remove_flags[j] = true;
             }
         }
-        src.fitness = 0.0;
+        src.fitness = -1.0;
         src.trial_count = 0;
     }
 }
@@ -155,6 +162,8 @@ void ABCViaMinimizer::onlooker_bee_phase(std::vector<Route>& routes,
             sources_[chosen] = neighbor;
             sources_[chosen].fitness = new_fit;
             sources_[chosen].trial_count = 0;
+        } else {
+            ++sources_[chosen].trial_count;
         }
     }
 }
@@ -173,7 +182,7 @@ void ABCViaMinimizer::scout_bee_phase() {
                 if (candidates_[j].removable && flip(rng_) == 0)
                     src.remove_flags[j] = true;
             }
-            src.fitness = 0.0;
+            src.fitness = -1.0;
             src.trial_count = 0;
         }
     }
@@ -215,8 +224,12 @@ double ABCViaMinimizer::compute_fitness(const std::vector<Route>& routes,
     for (const auto& r : routes) total_via += r.via_count;
 
     int new_drc = validator(routes);
-    // Higher fitness = fewer vias + no new DRCs
-    return 1.0 / (1.0 + total_via + new_drc * 1000.0);
+    // Higher fitness = fewer vias and no DRCs. Any DRC-producing change
+    // must be strictly worse than a DRC-free route set.
+    if (new_drc > 0) {
+        return -1000000.0 - static_cast<double>(new_drc) - static_cast<double>(total_via);
+    }
+    return 1.0 / (1.0 + static_cast<double>(total_via));
 }
 
 // ─── Greedy pre-pass ──────────────────────────────────────────────────────
