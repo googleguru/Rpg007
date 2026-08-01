@@ -13,6 +13,8 @@
 **A bio-inspired optimization layer over TritonRoute/OpenROAD detailed routing**  
 *Genetic Algorithms · Ant Colony Optimization · Particle Swarm · Artificial Bee Colony*
 
+This repository now includes a reproducible evaluation workflow for absolute DRC counts, equal-runtime and equal-compute comparisons, multi-seed summaries, convergence analysis, contest-score reporting, and a documented OpenROAD/TritonRoute provenance package.
+
 ---
 
 </div>
@@ -27,11 +29,31 @@ The framework now includes full **SkyWater Sky130A PDK** support — technology-
 
 | Metric | Baseline TritonRoute | RBA-TritonRoute | Improvement |
 |:---|:---:|:---:|:---:|
-| DRC Violations | 100% | **74.1%** | **−25.9%** |
-| Via Count | 100% | **93.9%** | **−6.1%** |
-| Wirelength | 100% | 100.9% | +0.9% |
-| Runtime Overhead | — | — | +21% |
-| Statistical Significance | — | Wilcoxon | **p < 0.001** |
+| DRC Violations | absolute count | absolute count | **reduction** |
+| Via Count | absolute count | absolute count | **reduction** |
+| Wirelength | absolute count | absolute count | **delta** |
+| Runtime | absolute seconds | absolute seconds | **overhead** |
+| Contest Score | absolute score | absolute score | **gain/loss** |
+
+The evaluation script now writes a structured report with absolute values for each benchmark, plus equal-runtime and equal-compute comparisons, best/worst/mean/std summaries, and convergence traces. See [scripts/evaluate_rba.py](scripts/evaluate_rba.py) and [results/summary.csv](results/summary.csv) for the generated tables.
+
+---
+
+## Experimental Workflow
+
+The repository supports the requested evaluation package:
+
+- Absolute DRC, via, wirelength, runtime, and contest-score reporting for every benchmark.
+- Equal-runtime and equal-compute-budget comparisons between baseline TritonRoute and RBA-TritonRoute.
+- Multi-seed summaries (best / worst / mean / std) for each benchmark.
+- Convergence analysis via iteration-wise metrics from the generated RBA metrics CSV files.
+- Reproducibility notes and a documented execution recipe in [Dockerfile](Dockerfile), [scripts/rba_config_ispd18.json](scripts/rba_config_ispd18.json), and [scripts/rba_config_sky130.json](scripts/rba_config_sky130.json).
+
+### Reproducibility Notes
+
+- The Docker image captures the Python/plotting stack and a reproducible execution environment.
+- The evaluation script writes [results/experiment_report.json](results/experiment_report.json) and [results/convergence_summary.json](results/convergence_summary.json) when run.
+- For full OpenROAD/TritonRoute experiments, record the exact binary version and Git commit used in the run log, then preserve the binary path and Tcl scripts in the results directory.
 
 ---
 
@@ -560,6 +582,44 @@ return best source applied to route set
 6. **Power-Aware Via Selection** — Model via resistance and current density in ABC fitness function
 7. **Sky130 LVS** — Add Netgen layout-vs-schematic verification to the post-route flow
 8. **Sky130 Full Tapeout Flow** — Extend to floorplan → placement → routing → sign-off using OpenLane + Sky130 PDK
+
+---
+
+## Implementation Status Checklist
+
+The current repository implements the core RBA-TritonRoute framework structure and evaluation workflow, but some pieces are still simplified prototypes rather than full production integrations.
+
+| Capability | Status | Evidence |
+|:---|:---|:---|
+| RBA-TritonRoute framework | ✅ Implemented | Main orchestrator and CLI entry point in [src/main.cpp](src/main.cpp) and [src/rba_orchestrator.cpp](src/rba_orchestrator.cpp) |
+| GA-based global net ordering | ✅ Implemented | GA engine in [include/ga_net_ordering.h](include/ga_net_ordering.h) and [src/ga_net_ordering.cpp](src/ga_net_ordering.cpp) |
+| PSO-based routing cost optimization | ✅ Implemented | PSO engine in [include/pso_cost_tuner.h](include/pso_cost_tuner.h) and [src/pso_cost_tuner.cpp](src/pso_cost_tuner.cpp) |
+| ACO-based rip-up and reroute selection | ⚠️ Partially implemented | ACO engine in [include/aco_path_search.h](include/aco_path_search.h) and [src/aco_path_search.cpp](src/aco_path_search.cpp), but reroute execution remains simplified |
+| DRC-aware pheromone mechanism | ⚠️ Partially implemented | DRC-marker penalties are wired through the orchestrator, but the feedback loop is not yet full-production |
+| ABC-based via minimization | ⚠️ Partially implemented | Optimizer exists in [include/abc_via_minimizer.h](include/abc_via_minimizer.h) and [src/abc_via_minimizer.cpp](src/abc_via_minimizer.cpp), while route re-writing is simplified |
+| Seven-phase iterative routing orchestrator | ✅ Implemented | Orchestration sequence in [include/rba_orchestrator.h](include/rba_orchestrator.h) and [src/rba_orchestrator.cpp](src/rba_orchestrator.cpp) |
+| DRC verification module | ✅ Implemented | DRC parsing in [src/triton_bridge.cpp](src/triton_bridge.cpp) and standalone checker in [scripts/sky130_verification.py](scripts/sky130_verification.py) |
+| Convergence/termination module | ⚠️ Partially implemented | Basic iteration-based stopping and early exit exist, but the convergence criterion is simple |
+| OpenROAD/TritonRoute automation interface | ✅ Implemented | Tcl/script automation bridge in [src/triton_bridge.cpp](src/triton_bridge.cpp) and [scripts/sky130_route.tcl](scripts/sky130_route.tcl) |
+| Benchmark evaluation framework | ✅ Implemented | Evaluation workflow in [scripts/evaluate_rba.py](scripts/evaluate_rba.py) |
+| Reproducible Docker environment | ✅ Implemented | Docker setup in [Dockerfile](Dockerfile) |
+
+### Summary
+
+The repository is best described as a functional research prototype with a fully structured framework and evaluation pipeline, but with several optimization stages that are still simplified rather than fully integrated with a real TritonRoute/OpenROAD internals flow.
+
+---
+
+## Reproducibility and Provenance
+
+The repository is intended to support the manuscript requirements for:
+
+- exact OpenROAD/TritonRoute version and commit recording,
+- Tcl/API interface documentation for net ordering, routing-cost modification, rip-up selection, DRC extraction, and via manipulation,
+- complete runtime accounting across GA, PSO, ACO, ABC and the outer iterations,
+- and benchmark preparation and execution commands for ISPD 2018/2019 runs.
+
+The implementation details are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the execution entry points live in [scripts/evaluate_rba.py](scripts/evaluate_rba.py) and [scripts/plot_convergence.py](scripts/plot_convergence.py).
 
 ---
 

@@ -178,6 +178,42 @@ x ← x + v
 
 ## 5. Evaluation Methodology
 
+The evaluation flow in this repository is designed to satisfy the manuscript requirements listed below:
+
+- Report absolute DRC counts, via counts, wirelength, runtime, and contest score for every benchmark.
+- Compare baseline TritonRoute and RBA-TritonRoute under identical wall-clock and equal-compute budgets.
+- Report multi-seed summaries with best, worst, mean, and standard deviation for each benchmark.
+- Add convergence analysis from the iteration-wise metrics emitted by the orchestrator.
+- Preserve provenance data for OpenROAD/TritonRoute version and Git commit used for each experiment.
+
+The analysis script [scripts/evaluate_rba.py](../scripts/evaluate_rba.py) writes:
+- [results/experiment_report.json](../results/experiment_report.json) for benchmark-level absolute statistics and deltas,
+- [results/convergence_summary.json](../results/convergence_summary.json) for iteration-wise convergence traces,
+- and [results/summary.csv](../results/summary.csv) for a compact table suitable for manuscript inclusion.
+
+### 5.1 Experimental Comparisons
+
+The report builder computes:
+- mean, std, min, max, and sample count for each metric,
+- percentage deltas between baseline and RBA for each benchmark,
+- equal-runtime winner selection using the same wall-clock budget,
+- equal-compute-budget winner selection using a comparable routing invocation budget,
+- and convergence summaries over outer iterations.
+
+### 5.2 Contest-Score Evaluation
+
+When a contest score is available for a routed DEF, it is carried through the evaluation pipeline and included in the report. The contest score is treated as an additional absolute metric alongside DRC, via count, wirelength, and runtime, enabling direct comparison against the contest metric rather than only normalized ratios.
+
+### 5.3 Reproducibility Package
+
+The reproducibility package includes:
+- [Dockerfile](../Dockerfile) for a repeatable runtime environment,
+- [scripts/rba_config_ispd18.json](../scripts/rba_config_ispd18.json) and [scripts/rba_config_sky130.json](../scripts/rba_config_sky130.json) for the parameter sidecars,
+- [scripts/sky130_route.tcl](../scripts/sky130_route.tcl) and the Tcl wrappers used by the bridge layer,
+- and benchmark preparation guidance from [scripts/setup_ispd_benchmarks.sh](../scripts/setup_ispd_benchmarks.sh).
+
+For every run, the operator should record the exact OpenROAD/TritonRoute binary path, Git commit, and Tcl/API sequence used in the run log and preserve it alongside the output directory.
+
 ### Benchmarks
 - ISPD 2018 Detailed Routing Contest (ispd18_test1–10)
 - ISPD 2019 Obstacle-Aware Routing (ispd19_test1–9)

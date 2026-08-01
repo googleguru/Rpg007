@@ -1,0 +1,21 @@
+[
+  {
+    "benchmark": "placeholder",
+    "baseline": {
+      "drc_count": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []},
+      "via_count": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []},
+      "wirelength": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []},
+      "runtime_sec": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []}
+    },
+    "rba": {
+      "drc_count": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []},
+      "via_count": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []},
+      "wirelength": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []},
+      "runtime_sec": {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0, "values": []}
+    },
+    "delta_pct": {"drc_count": 0.0, "via_count": 0.0, "wirelength": 0.0, "runtime_sec": 0.0},
+    "equal_runtime": {},
+    "equal_compute_budget": {},
+    "convergence": {}
+  }
+]

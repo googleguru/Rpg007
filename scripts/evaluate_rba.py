@@ -16,6 +16,7 @@ Dependencies:
 """
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -24,7 +25,7 @@ import sys
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 import statistics
 
 # Optional imports for plotting
@@ -50,6 +51,7 @@ class BenchmarkResult:
     wirelength:     float      = 0.0
     unrouted_nets:  int        = 0
     runtime_sec:    float      = 0.0
+    contest_score:  Optional[float] = None
     success:        bool       = True
     run_id:         int        = 0
 
@@ -61,6 +63,247 @@ class BenchmarkConfig:
     def_file:    str
     guide_file:  str
     timing_rpt:  str = ""
+
+
+# ─── Experiment analysis helpers ───────────────────────────────────────────
+
+
+def get_result_value(result: Any, key: str) -> Any:
+    if isinstance(result, dict):
+        return result.get(key)
+    return getattr(result, key, None)
+
+
+def summarize_metric(values: List[float]) -> Dict[str, Any]:
+    vals = [float(v) for v in values if v is not None]
+    if not vals:
+        return {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0}
+    return {
+        "mean": statistics.mean(vals),
+        "std": statistics.pstdev(vals) if len(vals) > 1 else 0.0,
+        "min": min(vals),
+        "max": max(vals),
+        "n": len(vals),
+        "values": vals,
+    }
+
+
+def summarize_results(results: List[Any], metric: str) -> Dict[str, Any]:
+    values = [get_result_value(r, metric) for r in results if get_result_value(r, metric) is not None]
+    return summarize_metric(values)
+
+
+def pick_best_result(results: List[Any], metric: str, budget: Optional[float] = None) -> Optional[Any]:
+    if not results:
+        return None
+    filtered = results
+    if budget is not None:
+        filtered = [r for r in results if get_result_value(r, "runtime_sec") is not None and get_result_value(r, "runtime_sec") <= budget]
+    if not filtered:
+        filtered = results
+    if metric == "contest_score":
+        return max(filtered, key=lambda r: float(get_result_value(r, metric) or 0.0))
+    return min(filtered, key=lambda r: float(get_result_value(r, metric) or float("inf")))
+
+
+def build_experiment_report(raw_results: Dict[str, List[Any]],
+                            iteration_summaries: Optional[Dict[str, Any]] = None,
+                            runtime_budget_sec: Optional[float] = None,
+                            compute_budget_invocations: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Build a benchmark-level report with absolute stats, deltas, equal-runtime and equal-compute comparisons."""
+    baseline_results = raw_results.get("baseline", [])
+    rba_results = raw_results.get("rba", [])
+
+    report: List[Dict[str, Any]] = []
+    benchmarks = sorted({get_result_value(r, "name") for r in baseline_results + rba_results if get_result_value(r, "name")})
+    for bench in benchmarks:
+        bl = [r for r in baseline_results if get_result_value(r, "name") == bench]
+        rb = [r for r in rba_results if get_result_value(r, "name") == bench]
+        if not bl or not rb:
+            continue
+
+        entry: Dict[str, Any] = {"benchmark": bench}
+        metrics = ["drc_count", "via_count", "wirelength", "runtime_sec"]
+        if any(get_result_value(r, "contest_score") is not None for r in bl + rb):
+            metrics.append("contest_score")
+
+        entry["baseline"] = {}
+        entry["rba"] = {}
+        for metric in metrics:
+            entry["baseline"][metric] = summarize_results(bl, metric)
+            entry["rba"][metric] = summarize_results(rb, metric)
+
+        entry["delta_pct"] = {}
+        for metric in metrics:
+            bl_mean = entry["baseline"][metric]["mean"]
+            rb_mean = entry["rba"][metric]["mean"]
+            if bl_mean == 0:
+                delta = 0.0
+            else:
+                delta = ((rb_mean - bl_mean) / bl_mean) * 100.0
+            entry["delta_pct"][metric] = delta
+
+        entry["equal_runtime"] = {}
+        for metric in metrics:
+            budget = runtime_budget_sec if runtime_budget_sec is not None else None
+            bl_best = pick_best_result(bl, metric, budget=budget)
+            rb_best = pick_best_result(rb, metric, budget=budget)
+            if bl_best is None or rb_best is None:
+                winner = "tie"
+            else:
+                bl_val = float(get_result_value(bl_best, metric) or 0.0)
+                rb_val = float(get_result_value(rb_best, metric) or 0.0)
+                if metric == "contest_score":
+                    winner = "rba" if rb_val > bl_val else "baseline"
+                else:
+                    winner = "rba" if rb_val < bl_val else "baseline"
+            entry["equal_runtime"][metric] = {
+                "baseline": bl_best,
+                "rba": rb_best,
+                "winner": winner,
+            }
+
+        entry["equal_compute_budget"] = {}
+        for metric in metrics:
+            budget = compute_budget_invocations if compute_budget_invocations is not None else 1.0
+            bl_best = pick_best_result(bl, metric, budget=budget)
+            rb_best = pick_best_result(rb, metric, budget=budget)
+            if bl_best is None or rb_best is None:
+                winner = "tie"
+            else:
+                bl_val = float(get_result_value(bl_best, metric) or 0.0)
+                rb_val = float(get_result_value(rb_best, metric) or 0.0)
+                if metric == "contest_score":
+                    winner = "rba" if rb_val > bl_val else "baseline"
+                else:
+                    winner = "rba" if rb_val < bl_val else "baseline"
+            entry["equal_compute_budget"][metric] = {
+                "baseline": bl_best,
+                "rba": rb_best,
+                "winner": winner,
+            }
+
+        if iteration_summaries is not None:
+            entry["convergence"] = iteration_summaries.get(bench, {})
+
+        report.append(entry)
+
+    return report
+
+
+def summarize_convergence(output_dir: str) -> Dict[str, Any]:
+    """Summarize RBA iteration traces from rba_metrics.csv files."""
+    summary: Dict[str, Any] = {}
+    root = Path(output_dir)
+    for csv_path in sorted(root.rglob("rba_metrics.csv")):
+        parts = csv_path.parts
+        if len(parts) < 4:
+            continue
+        bench = parts[-4]
+        run_id = parts[-2]
+        try:
+            run_id_int = int(run_id)
+        except ValueError:
+            run_id_int = 0
+
+        with open(csv_path, newline="") as handle:
+            rows = list(csv.DictReader(handle))
+
+        if not rows:
+            continue
+
+        bench_summary = summary.setdefault(bench, {"runs": []})
+        bench_summary["runs"].append({"run_id": run_id_int, "rows": rows})
+
+    for bench, payload in summary.items():
+        metrics = ["drc_count", "via_count", "wirelength"]
+        convergence = {}
+        for metric in metrics:
+            by_iteration: Dict[int, List[float]] = {}
+            for run in payload["runs"]:
+                for row in run["rows"]:
+                    try:
+                        iteration = int(row.get("iteration", 0))
+                        value = float(row.get(metric, 0.0))
+                    except (TypeError, ValueError):
+                        continue
+                    by_iteration.setdefault(iteration, []).append(value)
+            convergence[metric] = [
+                {
+                    "iteration": iteration,
+                    "mean": statistics.mean(values),
+                    "std": statistics.pstdev(values) if len(values) > 1 else 0.0,
+                    "min": min(values),
+                    "max": max(values),
+                }
+                for iteration, values in sorted(by_iteration.items())
+            ]
+        summary[bench] = convergence
+
+    return summary
+
+
+def capture_provenance(output_dir: str, openroad_bin: str = "openroad") -> Dict[str, Any]:
+    """Capture git and binary provenance metadata for a run."""
+    provenance: Dict[str, Any] = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "python_version": sys.version.split()[0],
+    }
+
+    try:
+        git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1], text=True).strip()
+        provenance["git_commit"] = git_commit
+    except Exception:
+        provenance["git_commit"] = None
+
+    try:
+        version = subprocess.check_output([openroad_bin, "--version"], text=True, stderr=subprocess.STDOUT).strip()
+        provenance["openroad_version"] = version
+    except Exception:
+        provenance["openroad_version"] = None
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    with open(output / "provenance.json", "w") as handle:
+        json.dump(provenance, handle, indent=2)
+    return provenance
+
+
+def write_experiment_report(report: List[Dict[str, Any]], output_dir: str, convergence_summaries: Optional[Dict[str, Any]] = None) -> None:
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    report_path = output / "experiment_report.json"
+    with open(report_path, "w") as handle:
+        json.dump(report, handle, indent=2)
+
+    if convergence_summaries is not None:
+        conv_path = output / "convergence_summary.json"
+        with open(conv_path, "w") as handle:
+            json.dump(convergence_summaries, handle, indent=2)
+
+    summary_rows = []
+    for entry in report:
+        summary_rows.append({
+            "benchmark": entry["benchmark"],
+            "baseline_drc": entry["baseline"]["drc_count"]["mean"],
+            "rba_drc": entry["rba"]["drc_count"]["mean"],
+            "drc_delta_pct": entry["delta_pct"]["drc_count"],
+            "baseline_via": entry["baseline"]["via_count"]["mean"],
+            "rba_via": entry["rba"]["via_count"]["mean"],
+            "via_delta_pct": entry["delta_pct"]["via_count"],
+            "baseline_wl": entry["baseline"]["wirelength"]["mean"],
+            "rba_wl": entry["rba"]["wirelength"]["mean"],
+            "wl_delta_pct": entry["delta_pct"]["wirelength"],
+            "baseline_rt": entry["baseline"]["runtime_sec"]["mean"],
+            "rba_rt": entry["rba"]["runtime_sec"]["mean"],
+            "runtime_delta_pct": entry["delta_pct"]["runtime_sec"],
+        })
+
+    if summary_rows:
+        with open(output / "summary.csv", "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(summary_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(summary_rows)
 
 
 # ─── Benchmark discovery ──────────────────────────────────────────────────────
@@ -293,41 +536,28 @@ def parse_metrics_csv(csv_path: str) -> dict:
 
 def compare_methods(baseline_results: List[BenchmarkResult],
                     rba_results: List[BenchmarkResult]) -> dict:
-    """
-    For each benchmark, compute:
-      - Mean improvement in DRC, via, wirelength, runtime across N runs
-      - Wilcoxon signed-rank p-value for each metric
-    """
-    benches = sorted(set(r.name for r in baseline_results))
+    """Backward-compatible wrapper around the new experiment-report builder."""
+    raw_results = {
+        "baseline": [asdict(r) for r in baseline_results],
+        "rba": [asdict(r) for r in rba_results],
+    }
+    report = build_experiment_report(raw_results)
     summary = {}
-
-    for name in benches:
-        bl = [r for r in baseline_results if r.name == name and r.success]
-        rb = [r for r in rba_results     if r.name == name and r.success]
-        if not bl or not rb:
-            continue
-
-        def pct_change(metric):
-            bl_vals = [getattr(r, metric) for r in bl]
-            rb_vals = [getattr(r, metric) for r in rb]
-            bl_mean = statistics.mean(bl_vals)
-            rb_mean = statistics.mean(rb_vals)
-            if bl_mean == 0:
-                return 0.0, bl_mean, rb_mean
-            return (rb_mean - bl_mean) / bl_mean * 100, bl_mean, rb_mean
-
-        drc_pct,  drc_bl,  drc_rb  = pct_change("drc_count")
-        via_pct,  via_bl,  via_rb  = pct_change("via_count")
-        wl_pct,   wl_bl,   wl_rb   = pct_change("wirelength")
-        rt_pct,   rt_bl,   rt_rb   = pct_change("runtime_sec")
-
-        summary[name] = {
-            "baseline_drc":  drc_bl,  "rba_drc":  drc_rb,  "drc_change%":  drc_pct,
-            "baseline_via":  via_bl,  "rba_via":  via_rb,  "via_change%":  via_pct,
-            "baseline_wl":   wl_bl,   "rba_wl":   wl_rb,   "wl_change%":   wl_pct,
-            "baseline_rt":   rt_bl,   "rba_rt":   rt_rb,   "rt_change%":   rt_pct,
+    for entry in report:
+        summary[entry["benchmark"]] = {
+            "baseline_drc": entry["baseline"]["drc_count"]["mean"],
+            "rba_drc": entry["rba"]["drc_count"]["mean"],
+            "drc_change%": entry["delta_pct"]["drc_count"],
+            "baseline_via": entry["baseline"]["via_count"]["mean"],
+            "rba_via": entry["rba"]["via_count"]["mean"],
+            "via_change%": entry["delta_pct"]["via_count"],
+            "baseline_wl": entry["baseline"]["wirelength"]["mean"],
+            "rba_wl": entry["rba"]["wirelength"]["mean"],
+            "wl_change%": entry["delta_pct"]["wirelength"],
+            "baseline_rt": entry["baseline"]["runtime_sec"]["mean"],
+            "rba_rt": entry["rba"]["runtime_sec"]["mean"],
+            "rt_change%": entry["delta_pct"]["runtime_sec"],
         }
-
     return summary
 
 
@@ -521,6 +751,7 @@ def main():
 
     baseline_results: List[BenchmarkResult] = []
     rba_results: List[BenchmarkResult]      = []
+    raw_results: Dict[str, List[Any]] = {"baseline": [], "rba": []}
 
     for bench in all_benchmarks:
         print(f"\n─── {bench.name} ───")
@@ -532,12 +763,14 @@ def main():
                 print("    [Baseline]")
                 bl = run_baseline(bench, args.openroad, args.output, run_id)
                 baseline_results.append(bl)
+                raw_results["baseline"].append(asdict(bl))
                 print(f"      DRC={bl.drc_count} via={bl.via_count} "
                       f"WL={bl.wirelength:.0f} t={bl.runtime_sec:.1f}s")
 
             print("    [RBA]")
             rb = run_rba(bench, args.rba_bin, args.output, run_id, args.rba_config)
             rba_results.append(rb)
+            raw_results["rba"].append(asdict(rb))
             print(f"      DRC={rb.drc_count} via={rb.via_count} "
                   f"WL={rb.wirelength:.0f} t={rb.runtime_sec:.1f}s")
 
@@ -556,22 +789,24 @@ def main():
                         run_klayout=args.sky130_klayout,
                     )
 
+    capture_provenance(args.output, openroad_bin=args.openroad)
+
     # Save raw results
     results_json = Path(args.output) / "raw_results.json"
     with open(results_json, "w") as f:
-        json.dump({
-            "baseline": [asdict(r) for r in baseline_results],
-            "rba":      [asdict(r) for r in rba_results]
-        }, f, indent=2)
+        json.dump(raw_results, f, indent=2)
     print(f"\n[Results] Raw data: {results_json}")
 
     # Analysis
     if baseline_results and rba_results:
+        convergence_summaries = summarize_convergence(args.output)
+        report = build_experiment_report(raw_results, iteration_summaries=convergence_summaries)
+        write_experiment_report(report, args.output, convergence_summaries=convergence_summaries)
+
         summary = compare_methods(baseline_results, rba_results)
         print_comparison_table(summary)
         run_significance_tests(baseline_results, rba_results, summary)
 
-        # Save summary CSV
         if HAS_PLOT:
             df = pd.DataFrame(summary).T
             df.to_csv(Path(args.output) / "summary.csv")
