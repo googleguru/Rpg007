@@ -17,6 +17,7 @@
 #include "pso_cost_tuner.h"
 #include "abc_via_minimizer.h"
 #include "triton_bridge.h"
+#include <cstdint>
 #include <vector>
 #include <string>
 
@@ -41,10 +42,16 @@ public:
                            const std::string& guide,
                            const std::string& timing_rpt = "");
 
-    // Run only the baseline (unmodified TritonRoute) for comparison.
+    // Run only the baseline (plain TritonRoute — no RBA injection) for comparison.
     RoutingSnapshot run_baseline(const std::string& lef,
                                  const std::string& def,
                                  const std::string& guide);
+
+    // Number of real openroad invocations consumed so far by this
+    // orchestrator instance (baseline + full-flow calls combined). Used to
+    // give a plain-TritonRoute tuning run the same "compute budget" RBA
+    // consumed — see scripts/evaluate_rba.py equal_compute_budget handling.
+    long router_invocation_count() const { return bridge_.invocation_count(); }
 
 private:
     RBAConfig       cfg_;
@@ -77,11 +84,14 @@ private:
                                  int iteration);
 
     // Phase 5: Rip-up candidate selection
-    // Returns subset of net IDs to rip up based on DRC markers + congestion
+    // Returns subset of net IDs to rip up based on DRC markers + congestion.
+    // max_candidates = -1 (default) derives the cap from
+    // cfg_.ripup_fraction * total net count instead of a hardcoded count —
+    // see scripts/ripup_budget_sweep.py for sweeping that fraction.
     std::vector<net_id> select_ripup_candidates(
         const std::vector<DRCMarker>& markers,
         const RoutingSnapshot& snap,
-        int max_candidates = 50);
+        int max_candidates = -1);
 
     // Phase 6: ACO-guided reroute
     void rba_guided_reroute(const std::vector<net_id>& ripup_nets,
@@ -90,6 +100,13 @@ private:
     // Phase 7: ABC via minimization
     int run_abc_phase(const std::string& routed_def,
                       const std::string& optimized_def);
+
+    // Derives a phase-specific seed from cfg_.seed (when set, >= 0) so
+    // --seed/--num_seeds produce distinguishable, reproducible runs across
+    // GA/PSO/ACO/ABC instead of every run reusing the same hardcoded
+    // per-optimizer default. Falls back to that optimizer's own default
+    // seed when cfg_.seed is unset (-1), preserving prior behavior exactly.
+    uint64_t phase_seed(int phase_offset, uint64_t default_seed) const;
 
     // ── Rip-up scoring ────────────────────────────────────────────────────
 

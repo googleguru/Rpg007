@@ -193,6 +193,20 @@ struct RBAConfig {
     double pso_c1            = 1.494;
     double pso_c2            = 1.494;
 
+    // PSO budget redesign (Tier 2.1): at the old defaults (20 particles x
+    // 30 iterations x 5 outer = 3,000 router passes/design/seed), a single
+    // seed on one ispd18-scale design was 50-100+ hours — infeasible. PSO
+    // now only runs on outer iterations in [pso_active_outer_iter_lo,
+    // pso_active_outer_iter_hi] (0-indexed); other outer iterations reuse
+    // the weights PSO last converged to instead of re-tuning. Combined with
+    // pso_n_particles=8, pso_iterations=5 (see scripts/rba_config_*.json),
+    // this yields ~8*5*2=80 router passes for PSO instead of 3,000. The
+    // actual pass count is logged for real (RBAOrchestrator::
+    // router_invocation_count(), written to run_summary.json) rather than
+    // asserted, so the runtime-overhead figure in any report is measured.
+    int    pso_active_outer_iter_lo = 1;
+    int    pso_active_outer_iter_hi = 2;
+
     // ABC parameters
     int    abc_n_bees        = 20;
     int    abc_max_cycles    = 100;
@@ -204,6 +218,29 @@ struct RBAConfig {
     bool   enable_timing     = true;
     std::string openroad_bin = "openroad";
     std::string output_dir   = "./rba_output";
+
+    // RNG seed for GA/PSO/ACO/ABC. -1 (default) means "use each optimizer's
+    // own built-in default seed" (unchanged behavior — every run has always
+    // been deterministic per-phase via those defaults, just not
+    // user-controllable or distinguishable across --runs). >=0 derives a
+    // distinct per-phase seed so --seed/--num_seeds produce genuinely
+    // different, reproducible runs — see RBAOrchestrator's phase_seed().
+    int    seed               = -1;
+
+    // Component-disable ablation flags (Tier 2.3): when false, that phase
+    // is skipped entirely rather than run with default/no-op parameters,
+    // so ablation numbers come from actual runs, not assumed contributions.
+    bool   enable_ga          = true;
+    bool   enable_pso         = true;
+    bool   enable_aco         = true;
+    bool   enable_abc         = true;
+
+    // Rip-up candidate cap as a fraction of total net count (Tier 2.4),
+    // replacing the old hardcoded flat count of 50. 0.10 was an arbitrary
+    // unjustified default before; kept as the default here pending the
+    // sweep in scripts/ripup_budget_sweep.py, but is now a real,
+    // configurable knob instead of a hardcoded literal.
+    double ripup_fraction     = 0.10;
 };
 
 } // namespace rba

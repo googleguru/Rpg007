@@ -10,6 +10,7 @@
   "threads": 8,
   "openroad_bin": "openroad",
   "output_dir": "./rba_sky130_output",
+  "ripup_fraction": 0.10,
 
   "tech_lef": "${SKY130_PDK}/libs.ref/sky130_fd_sc_hd/techlef/sky130_fd_sc_hd__nom.tlef",
   "cell_lef": "${SKY130_PDK}/libs.ref/sky130_fd_sc_hd/lef/sky130_fd_sc_hd.lef",
@@ -62,8 +63,10 @@
   },
 
   "pso": {
-    "n_particles": 30,
-    "iterations":  40,
+    "n_particles": 8,
+    "iterations":  5,
+    "active_outer_iter_lo": 1,
+    "active_outer_iter_hi": 2,
     "omega":       0.729,
     "c1":          1.494,
     "c2":          1.494,

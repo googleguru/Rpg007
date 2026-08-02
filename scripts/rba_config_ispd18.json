@@ -1,11 +1,12 @@
 {
   "_comment": "RBA configuration tuned for ISPD 2018 benchmarks (ispd18_test1–10)",
-  "_note": "PSO oracle budget is reduced for large designs (>50k nets) to bound runtime",
+  "_note": "PSO budget: 8 particles x 5 iterations, active only on outer_iters 1-2 (see pso.active_outer_iter_lo/hi) = ~80 router passes for PSO. The old 20x30x5=3000-pass config was infeasible (50-100+ hours/design/seed on typical hardware) — see Tier 2.1 in the repo backlog.",
 
   "outer_iters": 5,
   "threads": 8,
   "openroad_bin": "openroad",
   "output_dir": "./rba_output",
+  "ripup_fraction": 0.10,
 
   "ga": {
     "population":     50,
@@ -29,11 +30,13 @@
   },
 
   "pso": {
-    "n_particles": 20,
-    "iterations":  30,
+    "n_particles": 8,
+    "iterations":  5,
     "omega":       0.729,
     "c1":          1.494,
-    "c2":          1.494
+    "c2":          1.494,
+    "active_outer_iter_lo": 1,
+    "active_outer_iter_hi": 2
   },
 
   "abc": {

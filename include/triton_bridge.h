@@ -3,8 +3,14 @@
 //
 // Interaction model:
 //   - TritonRoute runs as a subprocess via OpenROAD Tcl scripts
-//   - The bridge writes configuration (net order, cost weights) to a JSON
-//     sidecar file that a patched TritonRoute reads at startup
+//   - The bridge injects RBA parameters (net priority, cost weights, forced
+//     rip-up nets) as real Tcl commands (set_drt_cost_weights,
+//     set_drt_net_order, set_drt_ripup_nets) into the generated Tcl script.
+//     These commands only exist in the patched OpenROAD build described by
+//     third_party/openroad.patch (see docs/INTEGRATION.md); on a stock
+//     OpenROAD build the generated Tcl detects their absence via
+//     `info commands` and falls back to TritonRoute's built-in defaults
+//     with a logged warning instead of failing.
 //   - After each routing run, the bridge parses the output DEF and DRC report
 //     to extract metrics for the bio-inspired algorithms
 //
@@ -14,8 +20,10 @@
 //   - The bridge provides the same interface either way
 
 #include "rba_types.h"
+#include <optional>
 #include <string>
 #include <filesystem>
+#include <unordered_map>
 
 namespace rba {
 
@@ -27,7 +35,6 @@ struct TritonRunConfig {
     std::string drc_report;
     int         threads        = 8;
     int         verbose        = 0;
-    std::string param_override; // path to JSON param sidecar
 };
 
 class TritonBridge {
@@ -41,19 +48,44 @@ public:
                      const std::string& guide);
 
     // ── Injection: RBA → TritonRoute ──────────────────────────────────────
+    // Each of these stages a value to be emitted as a real Tcl command by
+    // the next write_tcl_script() call (inside run_tritonroute()); they do
+    // not talk to TritonRoute directly. Net names are resolved via the net
+    // table populated by load_nets().
 
-    // Write ordered net list to the param sidecar JSON.
-    // TritonRoute reads this on next run to process nets in given sequence.
+    // Stage an ordered net priority list (highest priority first).
+    // Emitted as `set_drt_net_order -file <path>` (one net name per line).
+    // Patched TritonRoute consults this when initializing each worker's
+    // reroute queue (iteration 0 only) — see docs/INTEGRATION.md for the
+    // exact semantics (this is a per-worker-tile priority hint, not a
+    // single global sequential order, since TritonRoute routes via
+    // spatially-parallel worker tiles).
     void inject_net_order(const std::vector<net_id>& order);
 
-    // Write cost weight overrides to the param sidecar JSON.
+    // Stage cost weight overrides.
+    // Emitted as `set_drt_cost_weights -route_shape_cost .. -via_cost ..
+    // -marker_cost .. -grid_cost ..` (RBA's 6-field CostWeights are mapped
+    // onto TritonRoute's 4 real cost knobs; w_cong/w_timing are not yet
+    // wired to a real TritonRoute cost term — see docs/INTEGRATION.md).
     void inject_cost_weights(const CostWeights& weights);
+
+    // Stage a forced rip-up net list.
+    // Emitted as `set_drt_ripup_nets -file <path>` (one net name per line).
+    // Patched TritonRoute rips up and reroutes exactly these nets on the
+    // next detailed_route call, regardless of current DRC state.
+    void inject_ripup_nets(const std::vector<net_id>& nets);
 
     // ── Execution ─────────────────────────────────────────────────────────
 
     // Run TritonRoute (subprocess or library call) with current config.
+    // Emits any staged inject_*() values as real Tcl, then clears them.
     // Returns false if TritonRoute exits with non-zero status.
     bool run_tritonroute(const TritonRunConfig& run_cfg);
+
+    // Number of times run_tritonroute() has actually invoked the router
+    // binary (i.e. real router passes consumed), for equal-compute-budget
+    // comparisons. Never reset automatically.
+    long invocation_count() const { return invocation_count_; }
 
     // ── Extraction: TritonRoute → RBA ─────────────────────────────────────
 
@@ -99,9 +131,26 @@ private:
     std::string  design_name_;
     int          total_nets_ = 0;
     std::string  lef_file_, def_file_, guide_file_;
+    long         invocation_count_ = 0;
+
+    // net_id → net name, populated by load_nets(); used to translate
+    // inject_*() net_id lists into the net *names* TritonRoute's Tcl
+    // commands operate on.
+    std::unordered_map<net_id, std::string> net_names_;
+
+    // Staged (not-yet-emitted) values from the last inject_*() calls;
+    // consumed and cleared by the next write_tcl_script()/run_tritonroute().
+    std::optional<std::vector<net_id>> pending_net_order_;
+    std::optional<CostWeights>         pending_cost_weights_;
+    std::optional<std::vector<net_id>> pending_ripup_nets_;
 
     // Write Tcl script for OpenROAD invocation
-    std::string write_tcl_script(const TritonRunConfig& run_cfg) const;
+    std::string write_tcl_script(const TritonRunConfig& run_cfg);
+
+    // Resolve a net_id list to names and write one-per-line to `path`.
+    // Unknown net_ids (no entry in net_names_) are skipped.
+    void write_net_name_file(const std::vector<net_id>& ids,
+                             const std::string& path) const;
 
     // Parse DEF NETS section for wire/via segments
     void parse_def_nets(const std::string& def_path,

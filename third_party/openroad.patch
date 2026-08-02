@@ -1,0 +1,300 @@
+diff --git a/src/drt/src/TritonRoute.i b/src/drt/src/TritonRoute.i
+index 5833c25..bbc0d74 100644
+--- a/src/drt/src/TritonRoute.i
++++ b/src/drt/src/TritonRoute.i
+@@ -5,7 +5,10 @@
+ %{
+ 
+ #include <cstring>
++#include <fstream>
++#include <string>
+ #include "drt/TritonRoute.h"
++#include "drt-global.h"
+ #include "ord/OpenRoad.hh"
+ #include "utl/Logger.h"
+ %}
+@@ -24,6 +27,61 @@ int detailed_route_num_drvs()
+   return router->getNumDRVs();
+ }
+ 
++// RBA-TritonRoute integration commands — see docs/INTEGRATION.md in the
++// RBA-TritonRoute repo (github.com/googleguru/Rpg007) for full semantics.
++
++void set_drt_cost_weights(int route_shape_cost,
++                          int via_cost,
++                          int marker_cost,
++                          int grid_cost)
++{
++  auto* router = ord::OpenRoad::openRoad()->getTritonRoute();
++  auto* cfg = router->getRouterConfiguration();
++  cfg->ROUTESHAPECOST = route_shape_cost;
++  cfg->VIACOST = via_cost;
++  cfg->MARKERCOST = marker_cost;
++  cfg->GRIDCOST = grid_cost;
++}
++
++void set_drt_net_order(const char* file_name)
++{
++  auto* router = ord::OpenRoad::openRoad()->getTritonRoute();
++  auto* cfg = router->getRouterConfiguration();
++  cfg->RBA_NET_PRIORITY.clear();
++  std::ifstream f(file_name);
++  if (!f) {
++    router->getLogger()->error(
++        utl::DRT, 9001, "set_drt_net_order: cannot open {}", file_name);
++    return;
++  }
++  std::string net_name;
++  int rank = 0;
++  while (std::getline(f, net_name)) {
++    if (!net_name.empty()) {
++      cfg->RBA_NET_PRIORITY[net_name] = rank++;
++    }
++  }
++}
++
++void set_drt_ripup_nets(const char* file_name)
++{
++  auto* router = ord::OpenRoad::openRoad()->getTritonRoute();
++  auto* cfg = router->getRouterConfiguration();
++  cfg->RBA_FORCED_RIPUP_NETS.clear();
++  std::ifstream f(file_name);
++  if (!f) {
++    router->getLogger()->error(
++        utl::DRT, 9002, "set_drt_ripup_nets: cannot open {}", file_name);
++    return;
++  }
++  std::string net_name;
++  while (std::getline(f, net_name)) {
++    if (!net_name.empty()) {
++      cfg->RBA_FORCED_RIPUP_NETS.insert(net_name);
++    }
++  }
++}
++
+ void detailed_route_distributed(const char* remote_ip,
+                                 unsigned short remote_port,
+                                 const char* sharedVolume,
+diff --git a/src/drt/src/TritonRoute.tcl b/src/drt/src/TritonRoute.tcl
+index 75c0777..2cefcfc 100644
+--- a/src/drt/src/TritonRoute.tcl
++++ b/src/drt/src/TritonRoute.tcl
+@@ -499,3 +499,71 @@ proc fix_max_spacing { args } {
+   drt::fix_max_spacing_cmd
+ }
+ }
++
++# ── RBA-TritonRoute integration commands ───────────────────────────────────
++# See docs/INTEGRATION.md in the RBA-TritonRoute repo for full semantics.
++# Callers should guard these with
++#   if {[llength [info commands set_drt_cost_weights]] > 0} { ... }
++# to remain compatible with a stock (unpatched) OpenROAD build.
++
++sta::define_cmd_args "set_drt_cost_weights" {
++    [-route_shape_cost cost]
++    [-via_cost cost]
++    [-marker_cost cost]
++    [-grid_cost cost]
++}
++proc set_drt_cost_weights { args } {
++  sta::parse_key_args "set_drt_cost_weights" args \
++    keys {-route_shape_cost -via_cost -marker_cost -grid_cost} \
++    flags {}
++  sta::check_argc_eq0 "set_drt_cost_weights" $args
++  if { [info exists keys(-route_shape_cost)] } {
++    set route_shape_cost $keys(-route_shape_cost)
++  } else {
++    set route_shape_cost 8
++  }
++  if { [info exists keys(-via_cost)] } {
++    set via_cost $keys(-via_cost)
++  } else {
++    set via_cost 4
++  }
++  if { [info exists keys(-marker_cost)] } {
++    set marker_cost $keys(-marker_cost)
++  } else {
++    set marker_cost 32
++  }
++  if { [info exists keys(-grid_cost)] } {
++    set grid_cost $keys(-grid_cost)
++  } else {
++    set grid_cost 2
++  }
++  drt::set_drt_cost_weights $route_shape_cost $via_cost $marker_cost $grid_cost
++}
++
++sta::define_cmd_args "set_drt_net_order" {
++    -file filename
++}
++proc set_drt_net_order { args } {
++  sta::parse_key_args "set_drt_net_order" args \
++    keys {-file} \
++    flags {}
++  sta::check_argc_eq0 "set_drt_net_order" $args
++  if { ![info exists keys(-file)] } {
++    utl::error DRT 9003 "-file is required for set_drt_net_order command"
++  }
++  drt::set_drt_net_order $keys(-file)
++}
++
++sta::define_cmd_args "set_drt_ripup_nets" {
++    -file filename
++}
++proc set_drt_ripup_nets { args } {
++  sta::parse_key_args "set_drt_ripup_nets" args \
++    keys {-file} \
++    flags {}
++  sta::check_argc_eq0 "set_drt_ripup_nets" $args
++  if { ![info exists keys(-file)] } {
++    utl::error DRT 9004 "-file is required for set_drt_ripup_nets command"
++  }
++  drt::set_drt_ripup_nets $keys(-file)
++}
+diff --git a/src/drt/src/dr/FlexDR_init.cpp b/src/drt/src/dr/FlexDR_init.cpp
+index fc7e57d..7d1ef43 100644
+--- a/src/drt/src/dr/FlexDR_init.cpp
++++ b/src/drt/src/dr/FlexDR_init.cpp
+@@ -2312,6 +2312,32 @@ void FlexDRWorker::route_queue_init_queue(
+       route_queue_update_from_marker(
+           &marker, uniqueVictims, uniqueAggressors, checks, routes, nullptr);
+     }
++    // RBA-TritonRoute: unconditionally rip up and reroute nets named via
++    // set_drt_ripup_nets, regardless of whether they currently have a DRC
++    // violation. Mirrors the ripup-and-clear pattern used by
++    // initRipUpNetsFromMarkers() for marker-driven rip-up.
++    if (!router_cfg_->RBA_FORCED_RIPUP_NETS.empty()) {
++      frOrderedIdSet<frBlockObject*> alreadyQueued;
++      for (auto& entry : routes) {
++        alreadyQueued.insert(entry.block);
++      }
++      for (auto& uNet : nets_) {
++        auto* net = uNet.get();
++        if (alreadyQueued.find(net) != alreadyQueued.end()) {
++          continue;
++        }
++        if (router_cfg_->RBA_FORCED_RIPUP_NETS.count(net->getFrNet()->getName())
++            == 0) {
++          continue;
++        }
++        for (const auto& fig : net->getRouteConnFigs()) {
++          getWorkerRegionQuery().remove(fig.get());
++        }
++        net->clearRouteConnFigs();
++        net->setRipup();
++        routes.emplace_back(net, 0, true, nullptr);
++      }
++    }
+     mazeIterInit_sortRerouteQueue(0, checks);
+     mazeIterInit_sortRerouteQueue(0, routes);
+   } else if (getRipupMode() == RipUpMode::ALL) {
+diff --git a/src/drt/src/dr/FlexDR_maze.cpp b/src/drt/src/dr/FlexDR_maze.cpp
+index b02017d..3d7e50f 100644
+--- a/src/drt/src/dr/FlexDR_maze.cpp
++++ b/src/drt/src/dr/FlexDR_maze.cpp
+@@ -11,6 +11,7 @@
+ #include <list>
+ #include <map>
+ #include <memory>
++#include <optional>
+ #include <queue>
+ #include <random>
+ #include <set>
+@@ -1623,10 +1624,36 @@ bool FlexDRWorker::mazeIterInit_sortRerouteQueue(
+     int mazeIter,
+     std::vector<RouteQueueEntry>& rerouteNets)
+ {
++  // RBA-TritonRoute: externally-supplied per-net priority (lower = higher
++  // priority), consulted only for entries backed by a drNet whose frNet
++  // name has an entry in RBA_NET_PRIORITY (set via set_drt_net_order).
++  // This is a per-worker-tile ordering hint applied at maze iteration 0,
++  // not a single global sequential net order — see drt-global.h.
++  const auto& rbaPriority = router_cfg_->RBA_NET_PRIORITY;
++  auto rbaRank = [&](frBlockObject* block) -> std::optional<int> {
++    if (rbaPriority.empty() || block->typeId() != drcNet) {
++      return std::nullopt;
++    }
++    auto* dNet = static_cast<drNet*>(block);
++    auto it = rbaPriority.find(dNet->getFrNet()->getName());
++    if (it == rbaPriority.end()) {
++      return std::nullopt;
++    }
++    return it->second;
++  };
+   auto rerouteNetsComp
+-      = [](RouteQueueEntry const& a, RouteQueueEntry const& b) {
++      = [&](RouteQueueEntry const& a, RouteQueueEntry const& b) {
+           auto block1 = a.block;
+           auto block2 = b.block;
++          auto rank1 = rbaRank(block1);
++          auto rank2 = rbaRank(block2);
++          if (rank1 || rank2) {
++            int r1 = rank1.value_or(std::numeric_limits<int>::max());
++            int r2 = rank2.value_or(std::numeric_limits<int>::max());
++            if (r1 != r2) {
++              return r1 < r2;
++            }
++          }
+           if (block1->typeId() == block2->typeId()) {
+             return block1->getId() < block2->getId();
+           }
+diff --git a/src/drt/src/drt-global.h b/src/drt/src/drt-global.h
+index ece2ca6..48585ea 100644
+--- a/src/drt/src/drt-global.h
++++ b/src/drt/src/drt-global.h
+@@ -10,6 +10,7 @@
+ #include <optional>
+ #include <set>
+ #include <string>
++#include <unordered_map>
+ 
+ #include "db/obj/frMarker.h"
+ #include "frBaseTypes.h"
+@@ -97,6 +98,25 @@ struct RouterConfiguration
+   // unidirectional layers (stored as layer names)
+   std::set<std::string> unidirectional_layer_names_;
+ 
++  // ── RBA-TritonRoute externally-supplied hooks ──────────────────────────
++  // Populated via the set_drt_net_order / set_drt_ripup_nets Tcl commands
++  // (see TritonRoute.tcl / TritonRoute.i). Keyed by net name (frNet::getName()).
++  //
++  // RBA_NET_PRIORITY: lower value = higher priority. Consulted by
++  // FlexDRWorker::mazeIterInit_sortRerouteQueue (FlexDR_maze.cpp) when
++  // ordering each worker's reroute queue at maze iteration 0 — this is a
++  // per-worker-tile priority hint, not a single global sequential net
++  // order, since detailed routing is spatially parallelized into worker
++  // tiles. Nets with no entry keep TritonRoute's default ordering and sort
++  // after all prioritized nets.
++  std::unordered_map<std::string, int> RBA_NET_PRIORITY;
++
++  // RBA_FORCED_RIPUP_NETS: net names to unconditionally rip up and
++  // reroute on the next detailed_route call, regardless of current DRC
++  // state. Consulted by FlexDRWorker::route_queue_init_queue
++  // (FlexDR_init.cpp), RipUpMode::DRC branch.
++  std::set<std::string> RBA_FORCED_RIPUP_NETS;
++
+   template <class Archive>
+   void serialize(Archive& ar, unsigned int version);
+ };
+diff --git a/src/drt/src/serialization.h b/src/drt/src/serialization.h
+index a36ad4c..be346c9 100644
+--- a/src/drt/src/serialization.h
++++ b/src/drt/src/serialization.h
+@@ -20,6 +20,7 @@
+ #include "boost/serialization/set.hpp"
+ #include "boost/serialization/split_member.hpp"
+ #include "boost/serialization/unique_ptr.hpp"
++#include "boost/serialization/unordered_map.hpp"
+ #include "boost/serialization/vector.hpp"
+ #include "boost/serialization/weak_ptr.hpp"
+ #include "db/drObj/drMarker.h"
+@@ -825,6 +826,9 @@ void RouterConfiguration::serialize(Archive& ar, const unsigned int /*version*/)
+   (ar) & GC_IGNORE_PDN_LAYER_NUM;
+ 
+   (ar) & unidirectional_layer_names_;
++
++  (ar) & RBA_NET_PRIORITY;
++  (ar) & RBA_FORCED_RIPUP_NETS;
+ }
+ 
+ }  // namespace drt

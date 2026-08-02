@@ -19,9 +19,6 @@ set guide_file $::env(GUIDE_FILE)
 set output_dir $::env(OUTPUT_DIR)
 set n_threads  [expr {[info exists ::env(THREADS)] ? $::env(THREADS) : 8}]
 
-# ── RBA parameter sidecar (written by the RBA orchestrator) ───────────────────
-set rba_params $output_dir/rba_params.json
-
 # ── Output files ──────────────────────────────────────────────────────────────
 set routed_def  $output_dir/routed_sky130.def
 set drc_report  $output_dir/drc_sky130.rpt
@@ -39,12 +36,14 @@ set_routing_layers -signal "li1 met1 met2 met3 met4 met5"
 set_routing_layers -clock  "met3 met4 met5"
 
 # ── Detailed routing ──────────────────────────────────────────────────────────
+# Routing layer bounds are set above via set_routing_layers; passing
+# -bottom_routing_layer/-top_routing_layer to detailed_route is deprecated
+# (OpenROAD errors: "use set_routing_layers command instead") and was
+# removed from this call for that reason.
 detailed_route \
     -guide            $guide_file \
     -output_drc       $drc_report \
     -output_maze      $output_dir/maze.log \
-    -bottom_routing_layer li1 \
-    -top_routing_layer    met5 \
     -verbose          0 \
     -threads          $n_threads
 

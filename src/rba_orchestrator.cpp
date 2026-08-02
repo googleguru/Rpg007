@@ -62,12 +62,16 @@ OrchestratorResult RBAOrchestrator::run(const std::string& lef,
     cong_map_ = bridge_.estimate_congestion_from_guides(guide);
 
     // Extract routing graph for ACO (expensive; done once)
-    std::cout << "[Orchestrator] Extracting routing graph for ACO...\n";
-    routing_graph_ = bridge_.extract_routing_graph();
+    if (cfg_.enable_aco) {
+        std::cout << "[Orchestrator] Extracting routing graph for ACO...\n";
+        routing_graph_ = bridge_.extract_routing_graph();
+    }
 
-    // Initialize ACO pheromones
-    ACOPathSearch aco(cfg_, current_weights_);
-    aco.init_pheromones(routing_graph_);
+    // Initialize ACO pheromones (--no-aco skips this entirely for ablation)
+    ACOPathSearch aco(cfg_, current_weights_, phase_seed(3, 12345));
+    if (cfg_.enable_aco) {
+        aco.init_pheromones(routing_graph_);
+    }
 
     OrchestratorResult result;
     result.best_snapshot.fitness() ; // ensure initialized
@@ -80,11 +84,15 @@ OrchestratorResult RBAOrchestrator::run(const std::string& lef,
         // Phase 1: GA net ordering
         auto net_order = run_ga_phase();
 
-        // Phase 2: PSO cost tuning
-        // For large designs, skip PSO on first iter to get baseline weights
-        CostWeights weights = (iter == 0 && nets_.size() > 10000)
-                             ? CostWeights{}
-                             : run_pso_phase(net_order);
+        // Phase 2: PSO cost tuning — only active on a narrow outer-iteration
+        // window (see RBAConfig::pso_active_outer_iter_lo/hi) to keep the
+        // total router-pass budget feasible; other iterations reuse
+        // whatever weights PSO last converged to (current_weights_ starts
+        // at CostWeights{} defaults before the window is first reached).
+        bool pso_active = cfg_.enable_pso
+                        && iter >= cfg_.pso_active_outer_iter_lo
+                        && iter <= cfg_.pso_active_outer_iter_hi;
+        CostWeights weights = pso_active ? run_pso_phase(net_order) : current_weights_;
         current_weights_ = weights;
 
         // Phase 3+4: Run TritonRoute + read feedback
@@ -93,7 +101,9 @@ OrchestratorResult RBAOrchestrator::run(const std::string& lef,
         result.iteration_snapshots.push_back(snap);
 
         // Update ACO pheromones from DRC feedback
-        aco.apply_drc_penalty(routing_graph_, last_drc_markers_);
+        if (cfg_.enable_aco) {
+            aco.apply_drc_penalty(routing_graph_, last_drc_markers_);
+        }
 
         // Phase 5: Rip-up candidate selection
         auto ripup_nets = select_ripup_candidates(last_drc_markers_, snap);
@@ -122,10 +132,14 @@ OrchestratorResult RBAOrchestrator::run(const std::string& lef,
         }
     }
 
-    // Phase 7: ABC via minimization on best routing
-    std::string best_def = cfg_.output_dir + "/iter_best_routed.def";
-    std::string abc_def  = cfg_.output_dir + "/abc_via_optimized.def";
-    result.total_vias_removed = run_abc_phase(best_def, abc_def);
+    // Phase 7: ABC via minimization on best routing (--no-abc skips for ablation)
+    if (cfg_.enable_abc) {
+        std::string best_def = cfg_.output_dir + "/iter_best_routed.def";
+        std::string abc_def  = cfg_.output_dir + "/abc_via_optimized.def";
+        result.total_vias_removed = run_abc_phase(best_def, abc_def);
+    } else {
+        result.total_vias_removed = 0;
+    }
 
     auto flow_end = std::chrono::steady_clock::now();
     result.total_runtime_sec =
@@ -147,8 +161,16 @@ OrchestratorResult RBAOrchestrator::run(const std::string& lef,
 // ─── Phase 1: GA net ordering ─────────────────────────────────────────────
 
 std::vector<net_id> RBAOrchestrator::run_ga_phase() {
+    if (!cfg_.enable_ga) {
+        std::cout << "[GA] Disabled (--no-ga) — using DEF declaration order\n";
+        std::vector<net_id> order;
+        order.reserve(nets_.size());
+        for (const auto& n : nets_) order.push_back(n.id);
+        bridge_.inject_net_order(order);
+        return order;
+    }
     std::cout << "[GA] Running net ordering optimization...\n";
-    GANetOrdering ga(cfg_);
+    GANetOrdering ga(cfg_, phase_seed(1, 42));
     auto order = ga.run(nets_, cong_map_);
     bridge_.inject_net_order(order);
     return order;
@@ -177,7 +199,6 @@ CostWeights RBAOrchestrator::run_pso_phase(const std::vector<net_id>& net_order)
         rcfg.drc_report  = cfg_.output_dir + "/pso_eval_" +
                            std::to_string(eval_count) + "_drc.rpt";
         rcfg.threads     = cfg_.tr_threads;
-        rcfg.param_override = cfg_.output_dir + "/rba_params.json";
 
         auto t0 = std::chrono::steady_clock::now();
         bridge_.run_tritonroute(rcfg);
@@ -187,7 +208,7 @@ CostWeights RBAOrchestrator::run_pso_phase(const std::vector<net_id>& net_order)
             std::chrono::duration<double>(t1 - t0).count(), w);
     };
 
-    PSOCostTuner pso(cfg_);
+    PSOCostTuner pso(cfg_, phase_seed(2, 99887));
     return pso.run(oracle, current_weights_);
 }
 
@@ -208,7 +229,6 @@ RoutingSnapshot RBAOrchestrator::run_and_read(const std::vector<net_id>& net_ord
     rcfg.drc_report  = cfg_.output_dir + "/iter_" +
                        std::to_string(iteration) + "_drc.rpt";
     rcfg.threads     = cfg_.tr_threads;
-    rcfg.param_override = cfg_.output_dir + "/rba_params.json";
 
     auto t0 = std::chrono::steady_clock::now();
     bridge_.run_tritonroute(rcfg);
@@ -225,6 +245,10 @@ std::vector<net_id> RBAOrchestrator::select_ripup_candidates(
         const std::vector<DRCMarker>& markers,
         const RoutingSnapshot& snap,
         int max_candidates) {
+    if (max_candidates < 0) {
+        max_candidates = std::max(
+            1, static_cast<int>(cfg_.ripup_fraction * nets_.size()));
+    }
     // Count DRC occurrences per net
     std::unordered_map<net_id, int> drc_count;
     for (const auto& m : markers) {
@@ -278,20 +302,24 @@ double RBAOrchestrator::ripup_score(net_id nid,
 void RBAOrchestrator::rba_guided_reroute(const std::vector<net_id>& ripup_nets,
                                           const CostWeights& weights) {
     std::cout << "[ACO] Rerouting " << ripup_nets.size() << " ripped nets...\n";
-    // In full integration: mark these nets as unrouted in odb::dbBlock,
-    // then run FlexDR on them with ACO-guided path hints injected as
-    // additional route guides.
-    //
-    // Simplified flow: write net list to params, call TR with single-net mode
-    std::ofstream f(cfg_.output_dir + "/ripup_nets.txt");
-    for (net_id nid : ripup_nets) {
-        for (const auto& net : nets_) {
-            if (net.id == nid) { f << net.name << "\n"; break; }
-        }
-    }
-    // Trigger focused reroute via OpenROAD Tcl
-    // (detailed_route -nets_to_route [list ...])
-    std::cout << "[ACO] Reroute complete (see ripup_nets.txt)\n";
+    // Forces exactly these nets into TritonRoute's rip-up queue via
+    // set_drt_ripup_nets (third_party/openroad.patch); falls back to a
+    // logged no-op against a stock/unpatched OpenROAD build.
+    bridge_.inject_ripup_nets(ripup_nets);
+    bridge_.inject_net_order(ripup_nets);
+    bridge_.inject_cost_weights(weights);
+
+    TritonRunConfig rcfg;
+    rcfg.lef_file   = current_lef_file_;
+    rcfg.def_file   = current_def_file_;
+    rcfg.guide_file = current_guide_file_;
+    rcfg.output_def = cfg_.output_dir + "/reroute_routed.def";
+    rcfg.drc_report = cfg_.output_dir + "/reroute_drc.rpt";
+    rcfg.threads    = cfg_.tr_threads;
+
+    bridge_.run_tritonroute(rcfg);
+    last_drc_markers_ = bridge_.read_drc_markers(rcfg.drc_report);
+    std::cout << "[ACO] Reroute pass complete — " << rcfg.output_def << "\n";
 }
 
 // ─── Phase 7: ABC via minimization ───────────────────────────────────────
@@ -330,13 +358,18 @@ int RBAOrchestrator::run_abc_phase(const std::string& routed_def,
         return count;
     };
 
-    ABCViaMinimizer abc(cfg_);
+    ABCViaMinimizer abc(cfg_, phase_seed(4, 55443));
     auto optimized = abc.run(routes, validator);
     bridge_.write_routes(optimized, routed_def, optimized_def);
 
     std::cout << "[ABC] " << abc.vias_removed() << " vias removed. "
               << drc_eval_count << " DRC evals.\n";
     return abc.vias_removed();
+}
+
+uint64_t RBAOrchestrator::phase_seed(int phase_offset, uint64_t default_seed) const {
+    if (cfg_.seed < 0) return default_seed;
+    return static_cast<uint64_t>(cfg_.seed) + static_cast<uint64_t>(phase_offset);
 }
 
 // ─── Output helpers ───────────────────────────────────────────────────────

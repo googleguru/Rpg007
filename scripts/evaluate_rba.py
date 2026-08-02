@@ -28,6 +28,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import statistics
 
+# Robust to both `python3 scripts/evaluate_rba.py` and being imported as
+# `scripts.evaluate_rba` (as tests/test_evaluation_report.py does) — the
+# latter doesn't put scripts/ itself on sys.path, only the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ispd_contest_scorer import ScoreComponents, scaled_score as ispd_scaled_score
+
 # Optional imports for plotting
 try:
     import pandas as pd
@@ -44,16 +50,19 @@ except ImportError:
 
 @dataclass
 class BenchmarkResult:
-    name:           str
-    method:         str        # "baseline" or "rba"
-    drc_count:      int        = 0
-    via_count:      int        = 0
-    wirelength:     float      = 0.0
-    unrouted_nets:  int        = 0
-    runtime_sec:    float      = 0.0
-    contest_score:  Optional[float] = None
-    success:        bool       = True
-    run_id:         int        = 0
+    name:              str
+    method:            str        # "baseline" or "rba"
+    drc_count:         int        = 0
+    via_count:         int        = 0
+    wirelength:        float      = 0.0
+    unrouted_nets:     int        = 0
+    runtime_sec:       float      = 0.0
+    contest_score:     Optional[float] = None
+    success:           bool       = True
+    run_id:            int        = 0
+    seed:              Optional[int] = None
+    router_invocations: int       = 0   # real openroad invocations consumed (rba_router run_summary.json)
+    contest_score_caveats: Optional[str] = None  # see CONTEST_SCORE_CAVEATS; set whenever contest_score is
 
 
 @dataclass
@@ -74,15 +83,25 @@ def get_result_value(result: Any, key: str) -> Any:
     return getattr(result, key, None)
 
 
-def summarize_metric(values: List[float]) -> Dict[str, Any]:
+# Metrics where a higher value is the better outcome (everything else is
+# lower-is-better). Used to label "best"/"worst" per Referee 2's multi-seed
+# request — min/max alone don't say which one is actually good without the
+# reader knowing this per-metric, so we say it explicitly.
+HIGHER_IS_BETTER = {"contest_score"}
+
+
+def summarize_metric(values: List[float], metric: str = "") -> Dict[str, Any]:
     vals = [float(v) for v in values if v is not None]
     if not vals:
-        return {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0}
+        return {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "best": 0.0, "worst": 0.0, "n": 0}
+    higher_better = metric in HIGHER_IS_BETTER
     return {
         "mean": statistics.mean(vals),
         "std": statistics.pstdev(vals) if len(vals) > 1 else 0.0,
         "min": min(vals),
         "max": max(vals),
+        "best": max(vals) if higher_better else min(vals),
+        "worst": min(vals) if higher_better else max(vals),
         "n": len(vals),
         "values": vals,
     }
@@ -90,15 +109,21 @@ def summarize_metric(values: List[float]) -> Dict[str, Any]:
 
 def summarize_results(results: List[Any], metric: str) -> Dict[str, Any]:
     values = [get_result_value(r, metric) for r in results if get_result_value(r, metric) is not None]
-    return summarize_metric(values)
+    return summarize_metric(values, metric=metric)
 
 
-def pick_best_result(results: List[Any], metric: str, budget: Optional[float] = None) -> Optional[Any]:
+def pick_best_result(results: List[Any], metric: str, budget: Optional[float] = None,
+                     budget_field: str = "runtime_sec") -> Optional[Any]:
+    """Return the best (by `metric`) result among those within `budget` on
+    `budget_field`. `budget_field` is "runtime_sec" for equal-wall-clock
+    comparisons and "router_invocations" for equal-compute-budget
+    comparisons (see build_experiment_report) — these are different
+    fairness controls and must not be conflated."""
     if not results:
         return None
     filtered = results
     if budget is not None:
-        filtered = [r for r in results if get_result_value(r, "runtime_sec") is not None and get_result_value(r, "runtime_sec") <= budget]
+        filtered = [r for r in results if get_result_value(r, budget_field) is not None and get_result_value(r, budget_field) <= budget]
     if not filtered:
         filtered = results
     if metric == "contest_score":
@@ -143,11 +168,16 @@ def build_experiment_report(raw_results: Dict[str, List[Any]],
                 delta = ((rb_mean - bl_mean) / bl_mean) * 100.0
             entry["delta_pct"][metric] = delta
 
+        # Equal wall-clock: cap both methods' candidate runs at the same
+        # runtime_sec budget (Referee 1 Q2). If no budget is given, this
+        # degenerates to "best-of-N regardless of runtime" — not a fair
+        # comparison — so we surface that explicitly rather than silently
+        # picking an arbitrary default.
         entry["equal_runtime"] = {}
+        entry["equal_runtime"]["budget_sec"] = runtime_budget_sec
         for metric in metrics:
-            budget = runtime_budget_sec if runtime_budget_sec is not None else None
-            bl_best = pick_best_result(bl, metric, budget=budget)
-            rb_best = pick_best_result(rb, metric, budget=budget)
+            bl_best = pick_best_result(bl, metric, budget=runtime_budget_sec, budget_field="runtime_sec")
+            rb_best = pick_best_result(rb, metric, budget=runtime_budget_sec, budget_field="runtime_sec")
             if bl_best is None or rb_best is None:
                 winner = "tie"
             else:
@@ -163,11 +193,19 @@ def build_experiment_report(raw_results: Dict[str, List[Any]],
                 "winner": winner,
             }
 
+        # Equal compute budget: cap both methods at the same number of real
+        # router (openroad) invocations (Referee 3 Q3) — this is the
+        # fairness control that decides whether RBA has any advantage once
+        # plain TritonRoute is given the same number of tries, e.g. via a
+        # tuned-baseline search (see run_tuned_baseline / --no-*
+        # ablation runs). Distinct from equal_runtime: a design can route
+        # in fewer wall-clock seconds while still consuming more invocations
+        # (or vice versa), so these two controls answer different questions.
         entry["equal_compute_budget"] = {}
+        entry["equal_compute_budget"]["budget_invocations"] = compute_budget_invocations
         for metric in metrics:
-            budget = compute_budget_invocations if compute_budget_invocations is not None else 1.0
-            bl_best = pick_best_result(bl, metric, budget=budget)
-            rb_best = pick_best_result(rb, metric, budget=budget)
+            bl_best = pick_best_result(bl, metric, budget=compute_budget_invocations, budget_field="router_invocations")
+            rb_best = pick_best_result(rb, metric, budget=compute_budget_invocations, budget_field="router_invocations")
             if bl_best is None or rb_best is None:
                 winner = "tie"
             else:
@@ -182,6 +220,11 @@ def build_experiment_report(raw_results: Dict[str, List[Any]],
                 "rba": rb_best,
                 "winner": winner,
             }
+
+        entry["router_invocations"] = {
+            "baseline": summarize_results(bl, "router_invocations"),
+            "rba": summarize_results(rb, "router_invocations"),
+        }
 
         if iteration_summaries is not None:
             entry["convergence"] = iteration_summaries.get(bench, {})
@@ -243,26 +286,69 @@ def summarize_convergence(output_dir: str) -> Dict[str, Any]:
     return summary
 
 
-def capture_provenance(output_dir: str, openroad_bin: str = "openroad") -> Dict[str, Any]:
-    """Capture git and binary provenance metadata for a run."""
+def _sha256_file(path: Path) -> Optional[str]:
+    if not path.exists():
+        return None
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def capture_provenance(output_dir: str, openroad_bin: str = "openroad",
+                       rba_bin: str = "", rba_config: str = "",
+                       benchmark_files: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Capture provenance metadata for a run: repo state, the RBA binary,
+    the OpenROAD patch, and every input file consumed — per Tier 1.6,
+    "refuse to emit a report without them" (see write_experiment_report's
+    require_provenance gate). Always writes provenance.json, even on
+    partial failure, so a caller can inspect exactly what's missing."""
+    repo_root = Path(__file__).resolve().parents[1]
     provenance: Dict[str, Any] = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "python_version": sys.version.split()[0],
-        "source": "evaluation scaffold",
-        "notes": "Real router measurements are not present in this repository snapshot.",
     }
 
     try:
-        git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1], text=True).strip()
-        provenance["git_commit"] = git_commit
+        provenance["git_commit"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo_root, text=True).strip()
     except Exception:
         provenance["git_commit"] = None
 
     try:
-        version = subprocess.check_output([openroad_bin, "--version"], text=True, stderr=subprocess.STDOUT).strip()
-        provenance["openroad_version"] = version
+        provenance["openroad_version"] = subprocess.check_output(
+            [openroad_bin, "-version"], text=True, stderr=subprocess.STDOUT).strip()
     except Exception:
         provenance["openroad_version"] = None
+
+    # Upstream OpenROAD SHA this repo's patch is pinned to, and the patch's
+    # own hash — lets a report be traced back to the exact diff that was
+    # (or wasn't) applied to the openroad_bin actually used above.
+    commit_file = repo_root / "OPENROAD_COMMIT"
+    provenance["openroad_commit_pinned"] = (
+        commit_file.read_text().strip() if commit_file.exists() else None)
+    patch_file = repo_root / "third_party" / "openroad.patch"
+    provenance["openroad_patch_sha256"] = _sha256_file(patch_file)
+
+    if rba_bin:
+        provenance["rba_bin_path"] = rba_bin
+        provenance["rba_bin_sha256"] = _sha256_file(Path(rba_bin))
+    else:
+        provenance["rba_bin_path"] = None
+        provenance["rba_bin_sha256"] = None
+
+    if rba_config:
+        provenance["rba_config_path"] = rba_config
+        provenance["rba_config_sha256"] = _sha256_file(Path(rba_config))
+    else:
+        provenance["rba_config_path"] = None
+        provenance["rba_config_sha256"] = None
+
+    provenance["input_checksums"] = {
+        f: _sha256_file(Path(f)) for f in sorted(set(benchmark_files or []))
+    }
 
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -271,7 +357,36 @@ def capture_provenance(output_dir: str, openroad_bin: str = "openroad") -> Dict[
     return provenance
 
 
-def write_experiment_report(report: List[Dict[str, Any]], output_dir: str, convergence_summaries: Optional[Dict[str, Any]] = None) -> None:
+def provenance_is_complete(provenance: Dict[str, Any]) -> List[str]:
+    """Returns a list of missing/failed critical provenance fields (empty
+    list = complete). "Critical" means: without this field, a reader
+    cannot reproduce or trust the run — see write_experiment_report."""
+    missing = []
+    for field_name in ("git_commit", "openroad_version", "rba_bin_sha256"):
+        if not provenance.get(field_name):
+            missing.append(field_name)
+    return missing
+
+
+def write_experiment_report(report: List[Dict[str, Any]], output_dir: str,
+                            convergence_summaries: Optional[Dict[str, Any]] = None,
+                            provenance: Optional[Dict[str, Any]] = None) -> None:
+    """Writes experiment_report.json. Refuses to write a REAL (non-empty)
+    report without complete provenance (Tier 1.6) — raises RuntimeError
+    rather than silently emitting numbers nobody can trace back to a
+    router version, patch, or input files. The empty-report placeholder
+    path is exempt: it carries no claims to protect and always states
+    its own placeholder status."""
+    if report and provenance is not None:
+        missing = provenance_is_complete(provenance)
+        if missing:
+            raise RuntimeError(
+                f"Refusing to write a non-empty experiment_report.json: provenance is "
+                f"missing {missing}. See {Path(output_dir) / 'provenance.json'} for what "
+                f"was actually captured. Fix the underlying cause (e.g. no git repo, "
+                f"openroad binary not found, --rba_bin not passed) rather than bypassing "
+                f"this check.")
+
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     report_path = output / "experiment_report.json"
@@ -373,12 +488,57 @@ def discover_benchmarks(bench_dir: str) -> List[BenchmarkConfig]:
     return benchmarks
 
 
+# ─── ISPD contest score ─────────────────────────────────────────────────────
+
+# Approximations documented here, not hidden: RBA's current DEF/DRC parsers
+# (src/triton_bridge.cpp, this file's count_drc_violations/parse_def_metrics)
+# report totals, not the 12 distinct geometric quantities the official
+# ISPD19 formula needs (see scripts/ispd_contest_scorer.py's module
+# docstring). This computes a best-effort score from what IS measured:
+#   - every counted DRC violation -> num_spacing_violations (weight 500).
+#     This is a real approximation, not a real breakdown: short/min-area
+#     violations get the same weight (500) so the total is at least
+#     dimensionally consistent, but a design with mostly shorts vs mostly
+#     spacing violations gets the same score here, which the real contest
+#     evaluator would not produce.
+#   - total wirelength (DBU) -> total_wire_length_m2_pitch directly, i.e.
+#     NOT converted from DBU to M2-pitch units (that conversion needs a
+#     per-design M2 pitch value this repo doesn't currently carry through
+#     to evaluate_rba.py). The absolute number is therefore off by
+#     whatever that pitch is — treat it as ranking-consistent across runs
+#     of the *same* benchmark, not comparable across benchmarks or to a
+#     real contest score.
+# contest_score_caveats on the result records exactly this, every time.
+CONTEST_SCORE_CAVEATS = (
+    "all DRC violations counted as num_spacing_violations (no per-type breakdown available); "
+    "wirelength used in DBU, not converted to M2-pitch units; "
+    "via/off-track/wrong-way/short-area components unmeasured (assumed 0)"
+)
+
+
+def compute_contest_score(drc_count: int, wirelength: float, unrouted_nets: int,
+                          runtime_sec: float, median_runtime_sec: Optional[float]) -> Optional[float]:
+    """Best-effort ISPD19-formula score from currently-measured metrics.
+    Returns None if unrouted_nets > 0 (treated as the formula's open-net
+    INVALID case) or if inputs are missing. See CONTEST_SCORE_CAVEATS."""
+    if runtime_sec is None or runtime_sec <= 0:
+        return None
+    components = ScoreComponents.from_partial(
+        {"num_spacing_violations": float(drc_count or 0),
+         "total_wire_length_m2_pitch": float(wirelength or 0.0)},
+        open_nets=int(unrouted_nets or 0),
+    )
+    median = median_runtime_sec if median_runtime_sec and median_runtime_sec > 0 else runtime_sec
+    return ispd_scaled_score(components, runtime_sec, median)
+
+
 # ─── Run helpers ──────────────────────────────────────────────────────────────
 
 def run_baseline(bench: BenchmarkConfig, openroad_bin: str,
-                 output_dir: str, run_id: int) -> BenchmarkResult:
-    """Run unmodified TritonRoute via OpenROAD."""
-    result = BenchmarkResult(name=bench.name, method="baseline", run_id=run_id)
+                 output_dir: str, run_id: int,
+                 seed: Optional[int] = None) -> BenchmarkResult:
+    """Run plain TritonRoute via OpenROAD (no RBA net order/cost/rip-up injection)."""
+    result = BenchmarkResult(name=bench.name, method="baseline", run_id=run_id, seed=seed)
 
     out_dir = Path(output_dir) / bench.name / "baseline" / str(run_id)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -388,13 +548,14 @@ def run_baseline(bench: BenchmarkConfig, openroad_bin: str,
     out_def  = out_dir / "routed.def"
     drc_rpt  = out_dir / "drc.rpt"
 
+    or_seed_flag = f"-or_seed {seed} \\\n    " if seed is not None else ""
     tcl_content = f"""
 read_lef {bench.lef_file}
 read_def {bench.def_file}
 detailed_route \\
     -guide {bench.guide_file} \\
     -output_drc {drc_rpt} \\
-    -verbose 0 \\
+    {or_seed_flag}-verbose 0 \\
     -threads 8
 write_def {out_def}
 """
@@ -416,6 +577,7 @@ write_def {out_def}
         return result
 
     result.runtime_sec = time.monotonic() - t0
+    result.router_invocations = 1  # exactly one detailed_route call above
 
     # Parse metrics
     if out_def.exists():
@@ -429,9 +591,11 @@ write_def {out_def}
 
 def run_rba(bench: BenchmarkConfig, rba_bin: str,
             output_dir: str, run_id: int,
-            rba_config: Optional[str] = None) -> BenchmarkResult:
+            rba_config: Optional[str] = None,
+            openroad_bin: Optional[str] = None,
+            seed: Optional[int] = None) -> BenchmarkResult:
     """Run RBA-TritonRoute router."""
-    result = BenchmarkResult(name=bench.name, method="rba", run_id=run_id)
+    result = BenchmarkResult(name=bench.name, method="rba", run_id=run_id, seed=seed)
 
     out_dir = Path(output_dir) / bench.name / "rba" / str(run_id)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -448,6 +612,10 @@ def run_rba(bench: BenchmarkConfig, rba_bin: str,
         cmd += ["--timing", bench.timing_rpt]
     if rba_config:
         cmd += ["--config", rba_config]
+    if openroad_bin:
+        cmd += ["--openroad", openroad_bin]
+    if seed is not None:
+        cmd += ["--seed", str(seed)]
 
     t0 = time.monotonic()
     try:
@@ -478,6 +646,18 @@ def run_rba(bench: BenchmarkConfig, rba_bin: str,
         best = parse_metrics_csv(str(metrics_csv))
         if best:
             result.drc_count = best.get("drc_count", 0)
+
+    # Real router-invocation count, written by rba_router itself
+    # (src/main.cpp write_run_summary) — used for equal-compute-budget
+    # comparisons. Left at 0 (the dataclass default) if rba_router didn't
+    # write it, which honestly reflects "unknown" rather than guessing.
+    run_summary = out_dir / "run_summary.json"
+    if run_summary.exists():
+        try:
+            with open(run_summary) as f:
+                result.router_invocations = json.load(f).get("router_invocations", 0)
+        except (json.JSONDecodeError, OSError):
+            pass
 
     return result
 
@@ -746,10 +926,23 @@ def main():
                         help="JSON config file for RBA parameters")
     parser.add_argument("--runs",        type=int, default=5,
                         help="Number of independent runs per benchmark (default: 5)")
+    parser.add_argument("--seed",        type=int, default=None,
+                        help="Base RNG seed. If set, run i uses seed+i (both baseline "
+                             "-or_seed and RBA's GA/PSO/ACO/ABC seed), making multi-run "
+                             "results reproducible instead of drawing from ambient entropy.")
     parser.add_argument("--skip_baseline", action="store_true",
                         help="Skip baseline runs (use existing results)")
     parser.add_argument("--benchmarks_subset", nargs="*",
                         help="Run only these benchmark names")
+    parser.add_argument("--runtime_budget_sec", type=float, default=None,
+                        help="Equal-wall-clock comparison: cap candidate runs at this "
+                             "many seconds when picking each method's best-of-N result "
+                             "(Referee 1 Q2). Omit to compare best-of-N with no runtime cap.")
+    parser.add_argument("--compute_budget_invocations", type=float, default=None,
+                        help="Equal-compute-budget comparison: cap candidate runs at this "
+                             "many real router invocations when picking each method's "
+                             "best-of-N result (Referee 3 Q3). Omit to compare best-of-N "
+                             "with no invocation cap.")
     # Sky130 PDK verification options
     parser.add_argument("--sky130_verify", action="store_true",
                         help="Run Sky130 PDK DRC on each RBA output DEF")
@@ -784,19 +977,19 @@ def main():
 
         for run_id in range(args.runs):
             print(f"  Run {run_id+1}/{args.runs}")
+            seed = (args.seed + run_id) if args.seed is not None else None
 
             if not args.skip_baseline:
                 print("    [Baseline]")
-                bl = run_baseline(bench, args.openroad, args.output, run_id)
+                bl = run_baseline(bench, args.openroad, args.output, run_id, seed=seed)
                 baseline_results.append(bl)
-                raw_results["baseline"].append(asdict(bl))
                 print(f"      DRC={bl.drc_count} via={bl.via_count} "
                       f"WL={bl.wirelength:.0f} t={bl.runtime_sec:.1f}s")
 
             print("    [RBA]")
-            rb = run_rba(bench, args.rba_bin, args.output, run_id, args.rba_config)
+            rb = run_rba(bench, args.rba_bin, args.output, run_id, args.rba_config,
+                        openroad_bin=args.openroad, seed=seed)
             rba_results.append(rb)
-            raw_results["rba"].append(asdict(rb))
             print(f"      DRC={rb.drc_count} via={rb.via_count} "
                   f"WL={rb.wirelength:.0f} t={rb.runtime_sec:.1f}s")
 
@@ -815,7 +1008,37 @@ def main():
                         run_klayout=args.sky130_klayout,
                     )
 
-    capture_provenance(args.output, openroad_bin=args.openroad)
+    # Contest score needs the field's median runtime (per the official
+    # runtime_factor formula), so it's computed once per benchmark here,
+    # after all of that benchmark's runs exist, rather than per-run.
+    for bench in all_benchmarks:
+        bench_runs = ([r for r in baseline_results if r.name == bench.name]
+                     + [r for r in rba_results if r.name == bench.name])
+        runtimes = [r.runtime_sec for r in bench_runs if r.success and r.runtime_sec]
+        median_rt = statistics.median(runtimes) if runtimes else None
+        for r in bench_runs:
+            if not r.success:
+                continue
+            r.contest_score = compute_contest_score(
+                r.drc_count, r.wirelength, r.unrouted_nets, r.runtime_sec, median_rt)
+            r.contest_score_caveats = CONTEST_SCORE_CAVEATS
+
+    raw_results["baseline"] = [asdict(r) for r in baseline_results]
+    raw_results["rba"] = [asdict(r) for r in rba_results]
+
+    benchmark_files = []
+    for b in all_benchmarks:
+        benchmark_files += [b.lef_file, b.def_file, b.guide_file]
+        if b.timing_rpt:
+            benchmark_files.append(b.timing_rpt)
+    provenance = capture_provenance(args.output, openroad_bin=args.openroad,
+                                    rba_bin=args.rba_bin, rba_config=args.rba_config,
+                                    benchmark_files=benchmark_files)
+    missing_provenance = provenance_is_complete(provenance)
+    if missing_provenance:
+        print(f"[Provenance] WARNING: incomplete — missing {missing_provenance}. "
+              f"See {Path(args.output) / 'provenance.json'}. A non-empty "
+              f"experiment_report.json will refuse to write below until this is fixed.")
 
     # Save raw results
     results_json = Path(args.output) / "raw_results.json"
@@ -826,8 +1049,12 @@ def main():
     # Analysis
     if baseline_results and rba_results:
         convergence_summaries = summarize_convergence(args.output)
-        report = build_experiment_report(raw_results, iteration_summaries=convergence_summaries)
-        write_experiment_report(report, args.output, convergence_summaries=convergence_summaries)
+        report = build_experiment_report(
+            raw_results, iteration_summaries=convergence_summaries,
+            runtime_budget_sec=args.runtime_budget_sec,
+            compute_budget_invocations=args.compute_budget_invocations)
+        write_experiment_report(report, args.output, convergence_summaries=convergence_summaries,
+                                provenance=provenance)
 
         summary = compare_methods(baseline_results, rba_results)
         print_comparison_table(summary)

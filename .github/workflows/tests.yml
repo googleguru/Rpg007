@@ -20,3 +20,50 @@ jobs:
 
       - name: Run GoogleTest suite
         run: ctest --test-dir build --output-on-failure
+
+  python_tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install pytest
+
+      - name: Run pytest (evaluation report + ISPD contest scorer)
+        run: python3 -m pytest tests/ -v
+
+  end_to_end_smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure and build rba_router
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DRBA_ENABLE_TESTS=OFF -DRBA_OPENROAD_LINK=OFF
+          cmake --build build -j$(nproc)
+
+      # This runner has no real `openroad` binary (building patched OpenROAD
+      # from source needs more RAM/disk/time than this job has — see
+      # docs/INTEGRATION.md). tests/test_end_to_end.sh exits 77 in that case
+      # rather than faking a pass; still runs mini_test generation + rba_router
+      # argument handling so regressions in the harness itself are still caught.
+      # Point OPENROAD_BIN at a real (ideally patched) openroad binary — e.g. a
+      # self-hosted runner, or a job step that installs one — to get a real
+      # green/red result here instead of a skip.
+      - name: Run end-to-end smoke test (mini_test)
+        env:
+          RBA_BIN: ${{ github.workspace }}/build/rba_router
+        run: |
+          set +e
+          bash tests/test_end_to_end.sh
+          status=$?
+          set -e
+          if [ "$status" -eq 77 ]; then
+            echo "::warning::end-to-end smoke test SKIPPED — no openroad binary available on this runner"
+            exit 0
+          fi
+          exit $status
