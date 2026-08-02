@@ -11,6 +11,7 @@ add_executable(rba_tests
     test_aco_path_search.cpp
     test_pso_cost_tuner.cpp
     test_abc_via_minimizer.cpp
+    test_triton_bridge.cpp
 )
 target_link_libraries(rba_tests PRIVATE rba_lib GTest::gtest_main)
 include(GoogleTest)

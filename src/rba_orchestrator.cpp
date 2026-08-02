@@ -1,8 +1,10 @@
 #include "rba_orchestrator.h"
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <algorithm>
+#include <limits>
 #include <numeric>
 #include <filesystem>
 
@@ -129,6 +131,35 @@ OrchestratorResult RBAOrchestrator::run(const std::string& lef,
         if (snap.total_drc == 0 && snap.unrouted_nets == 0) {
             std::cout << "[Orchestrator] DRC-clean! Proceeding to via minimization.\n";
             break;
+        }
+
+        // Plateau early exit: stop once best fitness has stopped moving
+        // over the last convergence_plateau_window iterations, instead of
+        // always running the full rba_outer_iters regardless of progress.
+        // Uses history_ (previously write-only — nothing ever read it back
+        // for a stopping decision, so this criterion never actually fired).
+        int window = cfg_.convergence_plateau_window;
+        if (window > 0 && static_cast<int>(history_.size()) > window) {
+            double window_best = std::numeric_limits<double>::max();
+            for (size_t i = history_.size() - window; i < history_.size(); ++i) {
+                window_best = std::min(window_best, history_[i].fitness());
+            }
+            double prior_best = std::numeric_limits<double>::max();
+            for (size_t i = 0; i + window < history_.size(); ++i) {
+                prior_best = std::min(prior_best, history_[i].fitness());
+            }
+            if (prior_best < std::numeric_limits<double>::max()) {
+                double rel_improvement = (prior_best - window_best) /
+                                         std::max(1.0, std::abs(prior_best));
+                if (rel_improvement < cfg_.convergence_plateau_eps) {
+                    std::cout << "[Orchestrator] Plateau: best fitness improved only "
+                              << (rel_improvement * 100.0) << "% over the last "
+                              << window << " iterations (threshold "
+                              << (cfg_.convergence_plateau_eps * 100.0)
+                              << "%) — stopping early.\n";
+                    break;
+                }
+            }
         }
     }
 

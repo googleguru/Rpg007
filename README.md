@@ -283,6 +283,7 @@ rba_router/
 │   ├── test_aco_path_search.cpp      Google Test
 │   ├── test_pso_cost_tuner.cpp       Google Test
 │   ├── test_abc_via_minimizer.cpp    Google Test
+│   ├── test_triton_bridge.cpp        Google Test: real LEF/DEF/guide parsing (pin coords, congestion, routing graph, ROUTED/via parsing, write-back)
 │   ├── test_evaluation_report.py     pytest: report building + provenance gate
 │   ├── test_ispd_contest_scorer.py   pytest: scoring formula verified against the official worked example
 │   └── test_end_to_end.sh            Full 7-phase loop on mini_test; skips (exit 77) without a real openroad binary
@@ -631,8 +632,8 @@ TritonRoute's own defaults for that call instead of steering it.
 
 | Challenge | Mitigation |
 |:---|:---|
-| PSO oracle cost (1 TR run per particle) | Surrogate model for >10k nets; PSO skipped on iter 0 |
-| ACO graph size (100M+ nodes) | Graph extracted once; hierarchical clustering option |
+| PSO oracle cost (1 TR run per particle) | Budget cut to 8 particles × 5 iterations, active only on outer iterations 1-2 (~80 passes total instead of 3,000) — see Configuration Reference |
+| ACO graph size (100M+ nodes at full track resolution) | Graph built at GCell resolution (64×64×N-layers) instead of full-track — real, not hypothetical: verified 36,864 nodes / 210,688 edges on ispd18_test1 |
 | ACO premature stagnation | MAX-MIN bounds `[τ_min, τ_max]` + local update diversity |
 | GA fitness correlation with real DRC | Congestion-weighted net difficulty surrogate |
 | ABC via removal introduces DRCs | Greedy pre-pass strictly rejects any DRC introduction |
@@ -662,13 +663,13 @@ The current repository implements the core RBA-TritonRoute framework structure a
 | RBA-TritonRoute framework | ✅ Implemented | Main orchestrator and CLI entry point in [src/main.cpp](src/main.cpp) and [src/rba_orchestrator.cpp](src/rba_orchestrator.cpp) |
 | GA-based global net ordering | ✅ Implemented | GA engine in [include/ga_net_ordering.h](include/ga_net_ordering.h) and [src/ga_net_ordering.cpp](src/ga_net_ordering.cpp); disable via `--no-ga` for ablation |
 | PSO-based routing cost optimization | ✅ Implemented | PSO engine in [include/pso_cost_tuner.h](include/pso_cost_tuner.h) and [src/pso_cost_tuner.cpp](src/pso_cost_tuner.cpp); budget cut to ~80 router passes (see Configuration Reference); disable via `--no-pso` |
-| ACO-based rip-up and reroute selection | ⚠️ Partially implemented | ACO engine in [include/aco_path_search.h](include/aco_path_search.h); `rba_guided_reroute` now really calls the patched `set_drt_ripup_nets` Tcl command (previously wrote a file and did nothing), but `extract_routing_graph()` — the routing graph ACO's pheromones are initialized on — is still a stub returning an empty graph, so ACO has no real graph to reason about yet regardless of the OpenROAD patch |
-| DRC-aware pheromone mechanism | ⚠️ Partially implemented | DRC-marker penalties are wired through the orchestrator, but the feedback loop is not yet full-production |
-| ABC-based via minimization | ⚠️ Partially implemented | Optimizer exists in [include/abc_via_minimizer.h](include/abc_via_minimizer.h); `extract_routes`/`parse_def_nets` — which ABC needs real geometry from — is still a no-op stub, so ABC has nothing to operate on against a real DEF yet; disable via `--no-abc` |
+| ACO-based rip-up and reroute selection | ✅ Implemented | ACO engine in [include/aco_path_search.h](include/aco_path_search.h). `extract_routing_graph()` now builds a real GCell-resolution graph (64×64×N-layers, from real LEF layer/DEF die-area parsing) instead of an empty stub — verified against real ISPD 2018 data: 36,864 nodes / 210,688 edges on ispd18_test1. `rba_guided_reroute` calls the patched `set_drt_ripup_nets` Tcl command. See [tests/test_triton_bridge.cpp](tests/test_triton_bridge.cpp) |
+| DRC-aware pheromone mechanism | ✅ Implemented | `apply_drc_penalty` ([src/aco_path_search.cpp](src/aco_path_search.cpp)) was always fully implemented — it just had an empty graph to operate on before `extract_routing_graph()` was real; no code change was needed here once the graph existed |
+| ABC-based via minimization | ✅ Implemented | Optimizer in [include/abc_via_minimizer.h](include/abc_via_minimizer.h). `parse_def_nets`/`extract_routes` now parse real DEF 5.8 ROUTED/NEW geometry (handling `*` coordinate wildcards and via tokens), and `write_routes` patches the NETS section of a real DEF instead of copying it unchanged. Disable via `--no-abc`. See [tests/test_triton_bridge.cpp](tests/test_triton_bridge.cpp) |
 | Seven-phase iterative routing orchestrator | ✅ Implemented | Orchestration sequence in [include/rba_orchestrator.h](include/rba_orchestrator.h) and [src/rba_orchestrator.cpp](src/rba_orchestrator.cpp) |
 | DRC verification module | ✅ Implemented | DRC parsing in [src/triton_bridge.cpp](src/triton_bridge.cpp) and standalone checker in [scripts/sky130_verification.py](scripts/sky130_verification.py) |
-| Convergence/termination module | ⚠️ Partially implemented | Basic iteration-based stopping and early exit exist, but the convergence criterion is simple |
-| OpenROAD/TritonRoute automation interface | ⚠️ Partially implemented | Tcl script generation in [src/triton_bridge.cpp](src/triton_bridge.cpp) now emits real, patched-command-aware Tcl (see [TritonRoute Integration Points](#tritonroute-integration-points)), but `estimate_congestion_from_guides()` is a hardcoded fixed-size stub that ignores the guide file, and pin coordinates from `load_nets()` are hardcoded dummies — real LEF/DEF geometry parsing beyond net names is not yet implemented |
+| Convergence/termination module | ✅ Implemented | DRC-clean early exit plus a real plateau criterion (`RBAConfig::convergence_plateau_window/eps`): stops once best fitness improves less than a relative threshold over the last N outer iterations, reading `history_` (previously write-only — nothing ever consumed it for a stopping decision) |
+| OpenROAD/TritonRoute automation interface | ✅ Implemented | Tcl script generation in [src/triton_bridge.cpp](src/triton_bridge.cpp) emits real, patched-command-aware Tcl. `estimate_congestion_from_guides()` now parses real guide-file rectangles into a density-weighted GCell grid (verified: 64×64×6 from ispd18_test1's real guide file), and `load_nets()` resolves real pin coordinates via LEF MACRO/PIN geometry + DEF COMPONENTS placement + orientation transform (verified: 99.85% of 17,203 pins resolved on ispd18_test1, vs. the old hardcoded (0,0,0) for every pin) |
 | Benchmark evaluation framework | ✅ Implemented | Evaluation workflow in [scripts/evaluate_rba.py](scripts/evaluate_rba.py): absolute counts, equal-runtime/equal-compute-budget, multi-seed, provenance-gated report writing, ISPD19 contest score |
 | Second-baseline comparison (Dr.CU) | ❌ Documented stub only | [scripts/drcu_baseline_adapter.py](scripts/drcu_baseline_adapter.py) — real CLI transcribed from Dr.CU's own README, but no build/integration attempted (deferred by choice to keep the OpenROAD patch effort bounded) |
 | Reproducible Docker environment | ✅ Implemented | Docker setup in [Dockerfile](Dockerfile); no router binary by default, optional patched build via `--build-arg BUILD_OPENROAD=1` |
@@ -676,7 +677,7 @@ The current repository implements the core RBA-TritonRoute framework structure a
 
 ### Summary
 
-The repository is best described as a functional research prototype with a fully structured framework and evaluation pipeline, and a real (if uncompiled) OpenROAD patch replacing what was previously a non-functional injection mechanism. The remaining gap to a real measurement is twofold: the patch needs to be compiled and verified, and several DEF/LEF geometry parsers in `triton_bridge.cpp` (routing graph extraction, congestion estimation from guides, route extraction for ABC, real pin coordinates) are still stubs that block ACO and ABC from operating on real design data even once the patch builds.
+The repository is best described as a functional research prototype with a fully structured framework and evaluation pipeline, a real (if uncompiled) OpenROAD patch replacing what was previously a non-functional injection mechanism, and — as of this pass — real DEF/LEF geometry parsing (routing graph extraction, congestion estimation from guides, route extraction and write-back for ABC, real pin coordinates) verified against actual ISPD 2018 benchmark files rather than left as stubs. The remaining gap to a real measurement is the OpenROAD patch itself: it needs to be compiled (see [docs/INTEGRATION.md](docs/INTEGRATION.md)) and run end to end via [tests/test_end_to_end.sh](tests/test_end_to_end.sh) before any of this produces actual routing results instead of well-tested plumbing.
 
 ---
 

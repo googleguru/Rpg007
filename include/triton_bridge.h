@@ -132,6 +132,8 @@ private:
     int          total_nets_ = 0;
     std::string  lef_file_, def_file_, guide_file_;
     long         invocation_count_ = 0;
+    double       dbu_per_micron_ = 1000.0;  // from DEF "UNITS DISTANCE MICRONS n"
+    BBox         die_area_{0, 0, 0, 0};     // from DEF DIEAREA, in DBU
 
     // net_id → net name, populated by load_nets(); used to translate
     // inject_*() net_id lists into the net *names* TritonRoute's Tcl

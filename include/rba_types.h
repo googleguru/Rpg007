@@ -56,11 +56,18 @@ struct RoutingGraph {
     std::unordered_map<node_id, size_t> node_idx;
     std::unordered_map<edge_id, size_t> edge_idx;
 
-    // Pack (x/track_pitch, y/track_pitch, layer) into node_id
+    // Pack (x, y, layer) into node_id: 28 bits each for x/y (up to
+    // ~268M DBU, i.e. ~134mm at a typical 2000 DBU/micron — comfortably
+    // covers any real design), 8 bits for layer. Previously truncated y to
+    // 16 bits (max 65,535 DBU), which silently collides on any real design
+    // above that size (e.g. ispd18_test1's die is 383,040 DBU tall) —
+    // never triggered before because extract_routing_graph() was a stub
+    // that produced no real nodes to collide.
     static node_id make_node_id(dbu_t x, dbu_t y, layer_t z) {
-        return (static_cast<node_id>(z) << 48)
-             | (static_cast<node_id>(static_cast<uint32_t>(x)) << 16)
-             | static_cast<node_id>(static_cast<uint16_t>(y));
+        constexpr node_id kMask28 = (node_id{1} << 28) - 1;
+        return (static_cast<node_id>(z) << 56)
+             | ((static_cast<node_id>(static_cast<uint32_t>(x)) & kMask28) << 28)
+             | (static_cast<node_id>(static_cast<uint32_t>(y)) & kMask28);
     }
 };
 
@@ -241,6 +248,15 @@ struct RBAConfig {
     // sweep in scripts/ripup_budget_sweep.py, but is now a real,
     // configurable knob instead of a hardcoded literal.
     double ripup_fraction     = 0.10;
+
+    // Convergence/termination: in addition to the DRC-clean early exit,
+    // stop once best fitness hasn't improved by more than
+    // convergence_plateau_eps (relative) over the last
+    // convergence_plateau_window outer iterations. Sized against
+    // history_ (RBAOrchestrator), which previously was write-only —
+    // nothing ever read it back for a stopping decision.
+    int    convergence_plateau_window = 2;
+    double convergence_plateau_eps    = 0.01;  // 1% relative improvement
 };
 
 } // namespace rba
