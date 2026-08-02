@@ -1,0 +1,8 @@
+[
+  {"name": "ispd18_test1", "nets": 3153, "total_pins": 17203, "resolved_pins": 17177, "graph_nodes": 36864, "graph_edges": 210688, "congestion_max_overflow": 57, "congestion_total_overflow": 168133, "congestion_layers": 6},
+  {"name": "ispd18_test2", "nets": 36834, "total_pins": 159201, "resolved_pins": 157055, "graph_nodes": 36864, "graph_edges": 210688, "congestion_max_overflow": 183, "congestion_total_overflow": 770634, "congestion_layers": 7},
+  {"name": "ispd18_test3", "nets": 36700, "total_pins": 159703, "resolved_pins": 159703, "graph_nodes": 36864, "graph_edges": 210688, "congestion_max_overflow": 244, "congestion_total_overflow": 690602, "congestion_layers": 9},
+  {"name": "ispd18_test4", "nets": 72410, "total_pins": 318245, "resolved_pins": 318245, "graph_nodes": 36864, "graph_edges": 210688, "congestion_max_overflow": 318, "congestion_total_overflow": 1221245, "congestion_layers": 9},
+  {"name": "ispd18_test5", "nets": 72394, "total_pins": 318195, "resolved_pins": 318195, "graph_nodes": 36864, "graph_edges": 210688, "congestion_max_overflow": 390, "congestion_total_overflow": 1363848, "congestion_layers": 8},
+  {"name": "ispd18_test6", "nets": 107701, "total_pins": 475541, "resolved_pins": 475541, "graph_nodes": 36864, "graph_edges": 210688, "congestion_max_overflow": 291, "congestion_total_overflow": 2322013, "congestion_layers": 8}
+]
