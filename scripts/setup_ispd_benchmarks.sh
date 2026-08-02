@@ -4,8 +4,16 @@
 # ISPD 2018: https://www.ispd.cc/contests/18/ispd18_contest.html
 # ISPD 2019: https://www.ispd.cc/contests/19/
 #
-# The benchmark tarballs are hosted by the ISPD contest committee.
-# Run this script from the rba_router/benchmarks directory.
+# The tarballs are served directly by the ISPD contest site with no
+# registration or auth wall (verified: plain `curl` gets a 200 with no
+# redirect to a login page) — despite older notes in this repo claiming
+# otherwise. This script downloads them for real.
+#
+# Env vars:
+#   ISPD18_TESTS  space-separated test numbers to fetch (default: "1 2 3 4 5 6")
+#   ISPD19_TESTS  space-separated test numbers to fetch (default: none)
+#   SKIP_DOWNLOAD set to any value to skip network access (offline/CI use;
+#                 only the synthetic mini_test benchmark is generated)
 
 set -euo pipefail
 
@@ -13,24 +21,44 @@ BENCH_DIR="${1:-$(pwd)/benchmarks}"
 mkdir -p "$BENCH_DIR"
 cd "$BENCH_DIR"
 
-echo "=== ISPD 2018 Benchmark Setup ==="
-echo "Benchmark tarballs must be downloaded manually from:"
-echo "  https://www.ispd.cc/contests/18/ispd18_contest.html"
-echo ""
-echo "Expected directory structure after extraction:"
-echo "  benchmarks/"
-echo "  ├── ispd18_test1/"
-echo "  │   ├── ispd18_test1.input.lef"
-echo "  │   ├── ispd18_test1.input.def"
-echo "  │   └── ispd18_test1.input.guide"
-echo "  ├── ispd18_test2/"
-echo "  │   ..."
-echo "  └── ispd19_test1/"
-echo "      ..."
-echo ""
-echo "After placing tarballs in $BENCH_DIR, run:"
-echo "  for f in *.tar.gz; do tar xzf \$f; done"
-echo ""
+ISPD18_TESTS="${ISPD18_TESTS:-1 2 3 4 5 6}"
+ISPD19_TESTS="${ISPD19_TESTS:-}"
+
+if [ -z "${SKIP_DOWNLOAD:-}" ]; then
+    echo "=== ISPD 2018 Benchmark Download ==="
+    for i in $ISPD18_TESTS; do
+        name="ispd18_test${i}"
+        if [ -f "$name/${name}.input.def" ]; then
+            echo "  $name already present, skipping"
+            continue
+        fi
+        url="https://www.ispd.cc/contests/18/${name}.tgz"
+        echo "  fetching $url"
+        mkdir -p "$name"
+        curl -sL "$url" -o "/tmp/${name}.tgz"
+        tar xzf "/tmp/${name}.tgz" -C "$name"
+        rm -f "/tmp/${name}.tgz"
+    done
+
+    if [ -n "$ISPD19_TESTS" ]; then
+        echo "=== ISPD 2019 Benchmark Download ==="
+        for i in $ISPD19_TESTS; do
+            name="ispd19_test${i}"
+            if [ -f "$name/${name}.input.def" ]; then
+                echo "  $name already present, skipping"
+                continue
+            fi
+            url="https://www.ispd.cc/contests/19/benchmarks/${name}.tgz"
+            echo "  fetching $url"
+            mkdir -p "$name"
+            curl -sL "$url" -o "/tmp/${name}.tgz"
+            tar xzf "/tmp/${name}.tgz" -C "$name"
+            rm -f "/tmp/${name}.tgz"
+        done
+    fi
+else
+    echo "=== SKIP_DOWNLOAD set — only generating synthetic mini_test ==="
+fi
 
 # Create a synthetic mini-benchmark for testing without real benchmark files
 echo "=== Creating synthetic test benchmark ==="

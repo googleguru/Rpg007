@@ -25,6 +25,12 @@ venv/
 results/full_results.json
 simulation/figures/*.pdf
 
+# Benchmark input files (large; ISPD tarballs have their own redistribution
+# terms) — fetch via scripts/setup_ispd_benchmarks.sh or the ISPD contest
+# site. benchmarks/manifest.json (checksummed, real counts) IS tracked.
+benchmarks/*/
+!benchmarks/manifest.json
+
 # IDE
 .vscode/
 .idea/
