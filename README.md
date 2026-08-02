@@ -4,6 +4,7 @@
 ### Resilient Bio-Inspired Algorithm Routing Framework for VLSI Physical Design
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Unit Tests](https://github.com/googleguru/Rpg007/actions/workflows/tests.yml/badge.svg)](.github/workflows/tests.yml)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Docker-lightgrey.svg)](Dockerfile)
 [![Language](https://img.shields.io/badge/Language-C%2B%2B17%20%7C%20Python3-brightgreen.svg)]()
 [![Benchmarks](https://img.shields.io/badge/Benchmarks-ISPD%202018%20%2B%202019-orange.svg)]()
@@ -31,10 +32,15 @@ The framework includes **SkyWater Sky130A PDK** configuration and a Python-based
 |:---|:---|
 | C++ optimizer modules and orchestration | Implemented in the repository |
 | Evaluation/reporting scaffold | Implemented |
-| OpenROAD/TritonRoute patch (cost weights, net order, rip-up hooks) | Written, applies cleanly to the pinned commit; not yet compiled |
-| Measured OpenROAD/TritonRoute results | Not present in this repository |
-| Provenance for real router runs | Not captured yet |
+| OpenROAD/TritonRoute patch (cost weights, net order, rip-up hooks) | Written, applies cleanly to the pinned commit; not yet compiled — see [docs/INTEGRATION.md](docs/INTEGRATION.md) |
+| RBA→TritonRoute Tcl injection (`triton_bridge.cpp`) | Fixed — previously tried to `source` a JSON file as Tcl, which cannot work; now emits real Tcl calling the patched commands, with a graceful fallback against a stock OpenROAD build |
+| Equal-runtime / equal-compute-budget comparison | Implemented in `evaluate_rba.py`, backed by a real router-invocation counter (`run_summary.json`); untested against real router output |
+| Multi-seed reproducibility (`--seed`) | Implemented (CLI → `RBAConfig` → GA/PSO/ACO/ABC RNGs); untested against real router output |
+| Component ablation (`--no-ga/-pso/-aco/-abc`) | Implemented as real orchestrator branching, not assumed additive contributions |
+| ISPD19 contest score | Implemented from the official Cadence scoring formula, verified against its own worked ranking example — see caveats in [scripts/ispd_contest_scorer.py](scripts/ispd_contest_scorer.py) (current DEF/DRC parsers only support a partial, approximated score, not full fidelity) |
+| Provenance for real router runs | Capture is implemented and enforced — `write_experiment_report` refuses to write a non-empty report without it — but has not yet captured a real router run |
 | Docker image router binary | Not included by default (no silent-success stub); optional `--build-arg BUILD_OPENROAD=1` builds the patched router from source — see Dockerfile |
+| Measured OpenROAD/TritonRoute results | Not present in this repository |
 
 The evaluation script writes structured report files when run, but those outputs should be interpreted as scaffolded summaries until a real routing harness is executed. See [scripts/evaluate_rba.py](scripts/evaluate_rba.py) and [results/experiment_report.json](results/experiment_report.json) for the current placeholder-oriented output format.
 
@@ -44,9 +50,9 @@ The evaluation script writes structured report files when run, but those outputs
 
 The repository supports the requested evaluation package:
 
-- Absolute DRC, via, wirelength, runtime, and contest-score reporting for every benchmark.
-- Equal-runtime and equal-compute-budget comparisons between baseline TritonRoute and RBA-TritonRoute.
-- Multi-seed summaries (best / worst / mean / std) for each benchmark.
+- Absolute DRC, via, wirelength, runtime, and contest-score reporting for every benchmark (contest score follows the official ISPD19 formula, with explicit caveats where current parsers can only approximate it — see [scripts/ispd_contest_scorer.py](scripts/ispd_contest_scorer.py)).
+- Equal-runtime and equal-compute-budget comparisons between baseline TritonRoute and RBA-TritonRoute, the latter backed by a real router-invocation counter rather than reusing the runtime filter.
+- Multi-seed summaries (best / worst / mean / std) for each benchmark, with `--seed` producing reproducible, distinguishable runs.
 - Convergence analysis via iteration-wise metrics from the generated RBA metrics CSV files.
 - Reproducibility notes and a documented execution recipe in [Dockerfile](Dockerfile), [scripts/rba_config_ispd18.json](scripts/rba_config_ispd18.json), and [scripts/rba_config_sky130.json](scripts/rba_config_sky130.json).
 
@@ -268,15 +274,18 @@ rba_router/
 │   ├── aco_path_search.cpp           Dijkstra seeding + MMAS path construction
 │   ├── pso_cost_tuner.cpp            Velocity/position update + oracle evaluation
 │   ├── abc_via_minimizer.cpp         Greedy pre-pass + ABC colony phases
-│   ├── triton_bridge.cpp             Tcl script generation, DEF/DRC RPT/JSON parser
-│   ├── rba_orchestrator.cpp          Phase 1–7 driver, metrics CSV writer
-│   └── main.cpp                      CLI: --lef --def --guide --config --threads
+│   ├── triton_bridge.cpp             Tcl script generation (real, patched-command-aware), DEF/DRC RPT/JSON parser
+│   ├── rba_orchestrator.cpp          Phase 1–7 driver, ablation branching, phase_seed(), metrics CSV writer
+│   └── main.cpp                      CLI: --lef --def --guide --config --threads --seed --no-ga/-pso/-aco/-abc --ripup_fraction --openroad
 │
-├── tests/                            Google Test unit tests
-│   ├── test_ga_net_ordering.cpp
-│   ├── test_aco_path_search.cpp
-│   ├── test_pso_cost_tuner.cpp
-│   └── test_abc_via_minimizer.cpp
+├── tests/
+│   ├── test_ga_net_ordering.cpp      Google Test
+│   ├── test_aco_path_search.cpp      Google Test
+│   ├── test_pso_cost_tuner.cpp       Google Test
+│   ├── test_abc_via_minimizer.cpp    Google Test
+│   ├── test_evaluation_report.py     pytest: report building + provenance gate
+│   ├── test_ispd_contest_scorer.py   pytest: scoring formula verified against the official worked example
+│   └── test_end_to_end.sh            Full 7-phase loop on mini_test; skips (exit 77) without a real openroad binary
 │
 ├── gui/
 │   └── rba_gui.py                    6-page Streamlit GUI (dark mode, Plotly charts)
@@ -287,7 +296,11 @@ rba_router/
 │   └── figures/                      12 ISPD + 6 Sky130 PNGs — SIMULATED, not measured (see Visual Results)
 │
 ├── scripts/
-│   ├── evaluate_rba.py               ISPD evaluation harness + Wilcoxon + Sky130 verify hook
+│   ├── evaluate_rba.py               ISPD evaluation harness: equal-runtime/equal-compute-budget, seeds, provenance gate, contest score
+│   ├── ispd_contest_scorer.py        ISPD19 official scoring formula (verified against its own worked example) + ranking method
+│   ├── tuned_baseline_runner.py      Gives plain TritonRoute the same router-invocation budget RBA consumed, via random search over set_drt_cost_weights
+│   ├── ripup_budget_sweep.py         Sweeps RBAConfig::ripup_fraction and records DRC/via impact
+│   ├── drcu_baseline_adapter.py      Dr.CU second-baseline adapter — DOCUMENTED STUB, not a real integration
 │   ├── plot_convergence.py           Per-iteration convergence + PSO weight plots
 │   ├── rba_config_ispd18.json        Tuned parameter set for ISPD 2018 benchmarks
 │   ├── rba_config_sky130.json        Sky130A PDK config: layer map, DRC rules, via rules
@@ -297,6 +310,10 @@ rba_router/
 │   ├── setup_ispd_benchmarks.sh      Benchmark prep + synthetic mini-benchmark
 │   └── generate_benchmark_manifest.py Reads real net/cell/pin/layer counts + checksums from LEF/DEF on disk — never hand-typed
 │
+├── third_party/
+│   └── openroad.patch                Adds set_drt_cost_weights / set_drt_net_order / set_drt_ripup_nets to OpenROAD's drt module — applies cleanly, not yet compiled
+├── OPENROAD_COMMIT                   Upstream OpenROAD SHA the patch is pinned to
+│
 ├── benchmarks/
 │   └── manifest.json                  Generated by generate_benchmark_manifest.py; currently covers mini_test only (ISPD suites need manual download — see setup_ispd_benchmarks.sh)
 │
@@ -304,10 +321,14 @@ rba_router/
 │   └── summary.json                  Synthetic placeholder summary written by the simulation engine — not measured data
 │
 ├── docs/
-│   └── ARCHITECTURE.md               Full algorithm design, pseudocode, integration guide
+│   ├── ARCHITECTURE.md               Full algorithm design, pseudocode, integration guide
+│   └── INTEGRATION.md                The three new Tcl commands: exact semantics, confidence level, and what's still unverified
+│
+├── .github/workflows/
+│   └── tests.yml                     CI: C++ GoogleTest, Python pytest, end-to-end smoke test (skips — not fails — without a real openroad binary)
 │
 ├── CMakeLists.txt                    CMake build (optional OpenROAD library linkage)
-├── Dockerfile                        Ubuntu 22.04 + Python GUI stack + OpenROAD stub
+├── Dockerfile                        Ubuntu 22.04 + Python GUI stack; no router binary by default (see Docker image router binary, above)
 └── docker-compose.yml
 ```
 
@@ -354,9 +375,16 @@ streamlit run gui/rba_gui.py
 
 ```bash
 # Requires: CMake ≥3.16, GCC/Clang C++17, nlohmann/json, OpenROAD
+# (a stock OpenROAD build works — the RBA-specific commands below just
+# degrade gracefully with a logged warning; see docs/INTEGRATION.md for
+# the patched build that makes them real)
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DRBA_ENABLE_TESTS=ON
 cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
+
+# Cheapest end-to-end proof the 7-phase loop closes, on a synthetic
+# benchmark — skips (doesn't fail) if no real openroad binary is found
+bash tests/test_end_to_end.sh
 
 # Run on ISPD benchmark
 ./build/rba_router \
@@ -364,11 +392,19 @@ ctest --test-dir build --output-on-failure
   --def   ispd18_test1/ispd18_test1.input.def \
   --guide ispd18_test1/ispd18_test1.input.guide \
   --config scripts/rba_config_ispd18.json \
-  --output ./results
+  --output ./results \
+  --seed 1                # optional: reproducible GA/PSO/ACO/ABC across runs
 
 # Baseline comparison (plain TritonRoute — no RBA net order/cost/rip-up injection)
 ./build/rba_router --lef ... --def ... --guide ... --baseline-only
+
+# Ablation: disable individual components to measure their real contribution
+./build/rba_router --lef ... --def ... --guide ... --no-pso --no-abc
 ```
+
+Full CLI: `./build/rba_router --help`. Notable flags added alongside the Tier 0-2
+work: `--openroad <bin>` (router binary path), `--seed <N>`, `--ripup_fraction <f>`,
+`--no-ga` / `--no-pso` / `--no-aco` / `--no-abc`.
 
 ### Option 4 — Sky130 PDK Routing + Verification
 
@@ -490,6 +526,7 @@ return best source applied to route set
 {
   "outer_iters": 5,
   "threads": 8,
+  "ripup_fraction": 0.10,
   "ga": {
     "population": 50,  "generations": 80,
     "crossover_rate": 0.85,  "mutation_rate": 0.04,  "elite_count": 5
@@ -500,7 +537,8 @@ return best source applied to route set
     "tau_min": 1e-4,  "tau_max": 10.0,  "drc_penalty": 0.4
   },
   "pso": {
-    "n_particles": 20,  "iterations": 30,
+    "n_particles": 8,  "iterations": 5,
+    "active_outer_iter_lo": 1,  "active_outer_iter_hi": 2,
     "omega": 0.729,  "c1": 1.494,  "c2": 1.494
   },
   "abc": {
@@ -508,6 +546,16 @@ return best source applied to route set
   }
 }
 ```
+
+PSO was cut from 20 particles × 30 iterations × 5 outer iterations (3,000 router
+passes/design/seed — 50–100+ hours for a single seed on one ispd18-scale design,
+infeasible) down to 8 × 5, active only on outer iterations 1–2 (~80 passes).
+`ripup_fraction` replaces an old hardcoded flat cap of 50 nets. Both changes are
+real router-invocation counts, logged per run in `run_summary.json`
+(`RBAOrchestrator::router_invocation_count()`), not asserted — see
+[scripts/ripup_budget_sweep.py](scripts/ripup_budget_sweep.py) for sweeping the
+rip-up fraction and [scripts/tuned_baseline_runner.py](scripts/tuned_baseline_runner.py)
+for giving plain TritonRoute the same invocation budget.
 
 ### Sky130A PDK (`scripts/rba_config_sky130.json`)
 
@@ -555,15 +603,27 @@ return best source applied to route set
 
 ## TritonRoute Integration Points
 
-| Signal | Direction | RBA Use |
+Concrete as of the [`third_party/openroad.patch`](third_party/openroad.patch) work
+— these are real Tcl commands added to OpenROAD's `drt` module, not abstract signal
+names. Full semantics, confidence level per command, and what's still unverified
+(the patch applies cleanly but hasn't been compiled) are in
+[docs/INTEGRATION.md](docs/INTEGRATION.md).
+
+| Command / Signal | Direction | RBA Use |
 |:---|:---:|:---|
-| `net_order[]` | RBA → TR | GA-optimised net processing sequence |
-| `cost_weights{}` | RBA → TR | PSO-tuned (wire, via, congestion) weights |
-| `drc_markers[]` | TR → RBA | ACO pheromone evaporation hotspots |
-| `congestion_map[]` | TR → RBA | PSO particle fitness evaluation |
+| `set_drt_cost_weights -route_shape_cost -via_cost -marker_cost -grid_cost` | RBA → TR | PSO-tuned cost weights (`CostWeights` → 4 of TritonRoute's real `RouterConfiguration` fields; `w_cong`/`w_timing` not yet wired to a real cost term) |
+| `set_drt_net_order -file <path>` | RBA → TR | GA-optimised net priority — a per-worker-tile ordering hint at maze iteration 0, **not** a single global sequential order (TritonRoute routes via spatially-parallel worker tiles) |
+| `set_drt_ripup_nets -file <path>` | RBA → TR | Forces named nets into the rip-up queue regardless of current DRC state, for ACO-guided reroute |
+| `drc_markers[]` (`read_drc_markers`) | TR → RBA | ACO pheromone evaporation hotspots |
+| `congestion_map[]` (`estimate_congestion_from_guides`) | TR → RBA | PSO particle fitness evaluation |
 | `route_guides[]` | TR ↔ RBA | ACO path constraints + via-free corridor id |
-| `via_locations[]` | RBA → TR | ABC-minimised via placement |
+| `via_locations[]` (`extract_routes` / `write_routes`) | RBA → TR | ABC-minimised via placement |
 | `sky130_tech.h` | PDK → RBA | Layer rules injected into cost weight bounds & DRC checker |
+
+Every RBA → TR command above is emitted guarded by
+`if {[llength [info commands ...]] > 0}`, so `rba_router` still runs against a
+stock, unpatched OpenROAD build — it just logs a warning and falls back to
+TritonRoute's own defaults for that call instead of steering it.
 
 ---
 
@@ -600,34 +660,47 @@ The current repository implements the core RBA-TritonRoute framework structure a
 | Capability | Status | Evidence |
 |:---|:---|:---|
 | RBA-TritonRoute framework | ✅ Implemented | Main orchestrator and CLI entry point in [src/main.cpp](src/main.cpp) and [src/rba_orchestrator.cpp](src/rba_orchestrator.cpp) |
-| GA-based global net ordering | ✅ Implemented | GA engine in [include/ga_net_ordering.h](include/ga_net_ordering.h) and [src/ga_net_ordering.cpp](src/ga_net_ordering.cpp) |
-| PSO-based routing cost optimization | ✅ Implemented | PSO engine in [include/pso_cost_tuner.h](include/pso_cost_tuner.h) and [src/pso_cost_tuner.cpp](src/pso_cost_tuner.cpp) |
-| ACO-based rip-up and reroute selection | ⚠️ Partially implemented | ACO engine in [include/aco_path_search.h](include/aco_path_search.h) and [src/aco_path_search.cpp](src/aco_path_search.cpp), but reroute execution remains simplified |
+| GA-based global net ordering | ✅ Implemented | GA engine in [include/ga_net_ordering.h](include/ga_net_ordering.h) and [src/ga_net_ordering.cpp](src/ga_net_ordering.cpp); disable via `--no-ga` for ablation |
+| PSO-based routing cost optimization | ✅ Implemented | PSO engine in [include/pso_cost_tuner.h](include/pso_cost_tuner.h) and [src/pso_cost_tuner.cpp](src/pso_cost_tuner.cpp); budget cut to ~80 router passes (see Configuration Reference); disable via `--no-pso` |
+| ACO-based rip-up and reroute selection | ⚠️ Partially implemented | ACO engine in [include/aco_path_search.h](include/aco_path_search.h); `rba_guided_reroute` now really calls the patched `set_drt_ripup_nets` Tcl command (previously wrote a file and did nothing), but `extract_routing_graph()` — the routing graph ACO's pheromones are initialized on — is still a stub returning an empty graph, so ACO has no real graph to reason about yet regardless of the OpenROAD patch |
 | DRC-aware pheromone mechanism | ⚠️ Partially implemented | DRC-marker penalties are wired through the orchestrator, but the feedback loop is not yet full-production |
-| ABC-based via minimization | ⚠️ Partially implemented | Optimizer exists in [include/abc_via_minimizer.h](include/abc_via_minimizer.h) and [src/abc_via_minimizer.cpp](src/abc_via_minimizer.cpp), while route re-writing is simplified |
+| ABC-based via minimization | ⚠️ Partially implemented | Optimizer exists in [include/abc_via_minimizer.h](include/abc_via_minimizer.h); `extract_routes`/`parse_def_nets` — which ABC needs real geometry from — is still a no-op stub, so ABC has nothing to operate on against a real DEF yet; disable via `--no-abc` |
 | Seven-phase iterative routing orchestrator | ✅ Implemented | Orchestration sequence in [include/rba_orchestrator.h](include/rba_orchestrator.h) and [src/rba_orchestrator.cpp](src/rba_orchestrator.cpp) |
 | DRC verification module | ✅ Implemented | DRC parsing in [src/triton_bridge.cpp](src/triton_bridge.cpp) and standalone checker in [scripts/sky130_verification.py](scripts/sky130_verification.py) |
 | Convergence/termination module | ⚠️ Partially implemented | Basic iteration-based stopping and early exit exist, but the convergence criterion is simple |
-| OpenROAD/TritonRoute automation interface | ✅ Implemented | Tcl/script automation bridge in [src/triton_bridge.cpp](src/triton_bridge.cpp) and [scripts/sky130_route.tcl](scripts/sky130_route.tcl) |
-| Benchmark evaluation framework | ✅ Implemented | Evaluation workflow in [scripts/evaluate_rba.py](scripts/evaluate_rba.py) |
-| Reproducible Docker environment | ✅ Implemented | Docker setup in [Dockerfile](Dockerfile) |
+| OpenROAD/TritonRoute automation interface | ⚠️ Partially implemented | Tcl script generation in [src/triton_bridge.cpp](src/triton_bridge.cpp) now emits real, patched-command-aware Tcl (see [TritonRoute Integration Points](#tritonroute-integration-points)), but `estimate_congestion_from_guides()` is a hardcoded fixed-size stub that ignores the guide file, and pin coordinates from `load_nets()` are hardcoded dummies — real LEF/DEF geometry parsing beyond net names is not yet implemented |
+| Benchmark evaluation framework | ✅ Implemented | Evaluation workflow in [scripts/evaluate_rba.py](scripts/evaluate_rba.py): absolute counts, equal-runtime/equal-compute-budget, multi-seed, provenance-gated report writing, ISPD19 contest score |
+| Second-baseline comparison (Dr.CU) | ❌ Documented stub only | [scripts/drcu_baseline_adapter.py](scripts/drcu_baseline_adapter.py) — real CLI transcribed from Dr.CU's own README, but no build/integration attempted (deferred by choice to keep the OpenROAD patch effort bounded) |
+| Reproducible Docker environment | ✅ Implemented | Docker setup in [Dockerfile](Dockerfile); no router binary by default, optional patched build via `--build-arg BUILD_OPENROAD=1` |
+| CI | ✅ Implemented | [.github/workflows/tests.yml](.github/workflows/tests.yml): C++ GoogleTest, Python pytest, end-to-end smoke test (skips rather than fails without a real openroad binary) |
 
 ### Summary
 
-The repository is best described as a functional research prototype with a fully structured framework and evaluation pipeline, but with several optimization stages that are still simplified rather than fully integrated with a real TritonRoute/OpenROAD internals flow.
+The repository is best described as a functional research prototype with a fully structured framework and evaluation pipeline, and a real (if uncompiled) OpenROAD patch replacing what was previously a non-functional injection mechanism. The remaining gap to a real measurement is twofold: the patch needs to be compiled and verified, and several DEF/LEF geometry parsers in `triton_bridge.cpp` (routing graph extraction, congestion estimation from guides, route extraction for ABC, real pin coordinates) are still stubs that block ACO and ABC from operating on real design data even once the patch builds.
 
 ---
 
 ## Reproducibility and Provenance
 
+`scripts/evaluate_rba.py`'s `capture_provenance()` records, per run: the git commit,
+`openroad -version` output, the pinned `OPENROAD_COMMIT` SHA, a SHA-256 of
+`third_party/openroad.patch`, a SHA-256 of the `rba_router` binary and (if given)
+the `--rba_config` file, and SHA-256 checksums of every LEF/DEF/guide/timing input
+file used — all written to `provenance.json`. This is enforced, not advisory:
+`write_experiment_report()` refuses to write a non-empty `experiment_report.json`
+if git commit, OpenROAD version, or the RBA binary hash are missing, raising
+`RuntimeError` rather than silently emitting numbers nobody can trace back to a
+router version or patch state. The empty-report placeholder path is exempt, since
+it carries no claims to protect.
+
 The repository is intended to support the manuscript requirements for:
 
-- exact OpenROAD/TritonRoute version and commit recording,
-- Tcl/API interface documentation for net ordering, routing-cost modification, rip-up selection, DRC extraction, and via manipulation,
-- complete runtime accounting across GA, PSO, ACO, ABC and the outer iterations,
-- and benchmark preparation and execution commands for ISPD 2018/2019 runs.
+- exact OpenROAD/TritonRoute version and commit recording (see above),
+- Tcl/API interface documentation for net ordering, routing-cost modification, rip-up selection, DRC extraction, and via manipulation — see [docs/INTEGRATION.md](docs/INTEGRATION.md),
+- complete runtime accounting across GA, PSO, ACO, ABC and the outer iterations, including a real router-invocation counter (`run_summary.json`) for equal-compute-budget comparisons,
+- and benchmark preparation and execution commands for ISPD 2018/2019 runs, with real (never hand-typed) net/cell/pin/layer counts and checksums — see [scripts/generate_benchmark_manifest.py](scripts/generate_benchmark_manifest.py) and [benchmarks/manifest.json](benchmarks/manifest.json).
 
-The implementation details are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the execution entry points live in [scripts/evaluate_rba.py](scripts/evaluate_rba.py) and [scripts/plot_convergence.py](scripts/plot_convergence.py).
+The implementation details are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/INTEGRATION.md](docs/INTEGRATION.md); the execution entry points live in [scripts/evaluate_rba.py](scripts/evaluate_rba.py) and [scripts/plot_convergence.py](scripts/plot_convergence.py).
 
 ---
 
