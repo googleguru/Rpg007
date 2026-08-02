@@ -8,7 +8,9 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <regex>
+#include <utility>
 #include <nlohmann/json.hpp>   // header-only JSON — add to deps
 
 namespace rba {
@@ -229,6 +231,53 @@ std::vector<LefLayerInfo> parse_lef_routing_layers(const std::string& lef_path) 
     }
     flush();
     return layers;
+}
+
+// Parses LEF `VIA <name> DEFAULT ... LAYER a ; ... LAYER cut ; ... LAYER b ;
+// END <name>` blocks (verified against real ISPD 2018 LEF files, e.g.
+// benchmarks/ispd18_test1's VIA12_1C/VIA23_1C/... definitions) into a
+// (bottomRoutingLayer, topRoutingLayer) -> via name lookup. Real LEFs
+// define several via variants per layer pair (e.g. VIA12_1C, VIA12_1C_H,
+// VIA12_1C_V for centered/horizontal/vertical enclosure) — this keeps the
+// first one seen per pair, which is the plain "_1C"-style default in
+// every ISPD 2018 LEF this was checked against, not a guarantee for every
+// possible LEF.
+std::map<std::pair<std::string, std::string>, std::string> parse_lef_default_vias(
+        const std::string& lef_path) {
+    std::map<std::pair<std::string, std::string>, std::string> vias;
+    std::ifstream f(lef_path);
+    if (!f) return vias;
+
+    std::regex via_start_re(R"(^\s*VIA\s+(\S+)\s+DEFAULT\s*$)");
+    std::regex via_layer_re(R"(^\s*LAYER\s+(\S+)\s*;)");
+    std::regex end_re(R"(^\s*END\s+(\S+)\s*$)");
+
+    std::string line, cur_via;
+    std::vector<std::string> cur_layers;
+    bool in_via = false;
+    while (std::getline(f, line)) {
+        std::smatch m;
+        if (!in_via) {
+            if (std::regex_search(line, m, via_start_re)) {
+                cur_via = m[1];
+                cur_layers.clear();
+                in_via = true;
+            }
+            continue;
+        }
+        if (std::regex_search(line, m, end_re) && m[1] == cur_via) {
+            if (cur_layers.size() >= 3) {
+                auto key = std::make_pair(cur_layers.front(), cur_layers.back());
+                if (vias.find(key) == vias.end()) vias[key] = cur_via;
+            }
+            in_via = false;
+            continue;
+        }
+        if (std::regex_search(line, m, via_layer_re)) {
+            cur_layers.push_back(m[1]);
+        }
+    }
+    return vias;
 }
 
 }  // anonymous namespace
@@ -941,15 +990,17 @@ std::vector<Route> TritonBridge::extract_routes(const std::string& def_file) {
 // Serializes a Route's path/is_via back into DEF ROUTED syntax:
 //   ROUTED <layer0> ( x0 y0 ) ( x1 y1 ) [VIA_NAME] ( x2 y2 ) ...
 // Layer changes emit a bare "NEW <layer>" continuation, matching how real
-// DEF splits a route into per-layer segments. Via transitions between
-// waypoint i and i+1 emit a generic "VIA<fromLayer>_<toLayer>" token —
-// this is a placeholder via name (no VIARULE/VIA-definition table is
-// parsed anywhere in this codebase yet), so a real TritonRoute run's own
-// via names are NOT reproduced here; a design that round-trips through
-// write_routes needs its via names re-resolved by whatever reads the
-// output next. Documented, not hidden.
-static std::string serialize_route(const Route& r, const std::string& net_name,
-                                   const std::vector<std::string>& layer_names) {
+// DEF splits a route into per-layer segments. Via transitions look up a
+// real via name from the LEF's own VIA definitions (see
+// parse_lef_default_vias) keyed by (fromLayer, toLayer); if no via was
+// defined for that exact layer pair in the LEF, falls back to a synthetic
+// "VIA<fromLayer>_<toLayer>" name and logs a warning rather than silently
+// emitting an unresolvable via, since ABC's via minimization results are
+// only meaningful once these are real DRC-checkable via names.
+static std::string serialize_route(
+        const Route& r, const std::string& net_name,
+        const std::vector<std::string>& layer_names,
+        const std::map<std::pair<std::string, std::string>, std::string>& via_names) {
     if (r.path.empty()) return "";
     std::ostringstream out;
     out << "- " << net_name << "\n";
@@ -962,8 +1013,19 @@ static std::string serialize_route(const Route& r, const std::string& net_name,
     for (size_t i = 1; i < r.path.size(); ++i) {
         bool via = (i - 1) < r.is_via.size() && r.is_via[i - 1];
         if (via) {
-            out << " VIA" << static_cast<int>(prev_layer) << "_"
-                << static_cast<int>(r.path[i].z);
+            std::string from = layer_name(prev_layer), to = layer_name(r.path[i].z);
+            auto key = (prev_layer <= r.path[i].z) ? std::make_pair(from, to)
+                                                    : std::make_pair(to, from);
+            auto it = via_names.find(key);
+            if (it != via_names.end()) {
+                out << " " << it->second;
+            } else {
+                out << " VIA" << static_cast<int>(prev_layer) << "_"
+                    << static_cast<int>(r.path[i].z);
+                std::cerr << "[Bridge] write_routes: no LEF VIA found for "
+                          << key.first << "->" << key.second
+                          << " — emitting unresolved placeholder via name\n";
+            }
         }
         if (r.path[i].z != prev_layer && !via) {
             out << "\n  NEW " << layer_name(r.path[i].z);
@@ -990,6 +1052,7 @@ bool TritonBridge::write_routes(const std::vector<Route>& routes,
         for (auto& l : parse_lef_routing_layers(lef_file_)) names.push_back(l.name);
         return names;
     }();
+    auto via_names = parse_lef_default_vias(lef_file_);
 
     std::unordered_map<net_id, const Route*> by_net;
     for (const auto& r : routes) by_net[r.net] = &r;
@@ -1023,7 +1086,7 @@ bool TritonBridge::write_routes(const std::vector<Route>& routes,
             std::string name = m[1];
             auto nid_it = name_to_id.find(name);
             if (nid_it != name_to_id.end() && by_net.count(nid_it->second)) {
-                out << serialize_route(*by_net[nid_it->second], name, layers);
+                out << serialize_route(*by_net[nid_it->second], name, layers, via_names);
                 skipping_net = true;   // drop the original geometry for this net
                 continue;
             }
