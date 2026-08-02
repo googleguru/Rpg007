@@ -17,13 +17,29 @@ their ability to actually steer the router without the patch.
 
 ## Building the patched OpenROAD
 
+Needs a machine with real headroom — OpenROAD's own dependency set (Boost,
+LEMON, spdlog, or-tools, etc.) plus the build itself commonly wants well
+beyond 8GB RAM and tens of GB of disk, and can take 1-3+ hours even on a
+capable multi-core machine. This was not attempted in the sandbox this
+patch was authored in (2 CPUs / 8GB RAM / 20GB disk shared with the repo
+itself) for exactly that reason.
+
 ```bash
 git clone https://github.com/The-OpenROAD-Project/OpenROAD.git
 cd OpenROAD
 git checkout "$(cat /path/to/Rpg007/OPENROAD_COMMIT)"
 git apply /path/to/Rpg007/third_party/openroad.patch
-# then follow OpenROAD's own build instructions (etc/DependencyInstaller.sh
-# + cmake --build build), which are unchanged by this patch.
+
+# Installs OpenROAD's own dependencies system-wide (needs sudo).
+# -all pulls every optional dep; see -h for a narrower set if you already
+# have some of these.
+./etc/DependencyInstaller.sh -all
+
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+
+# Binary lands at build/src/openroad by default; confirm it runs:
+./build/src/openroad -version
 ```
 
 The patch touches only `src/drt/src/{TritonRoute.i,TritonRoute.tcl,drt-global.h,
@@ -35,11 +51,48 @@ since `TritonRoute.i`/`.tcl` are already wired into OpenROAD's Tcl build.
 (`git apply --check`) to the pinned commit and is grounded in direct
 inspection of that commit's real source (not a guess at API names — see
 the "Confidence" note on each command below). It has **not** been compiled
-in the environment this patch was authored in, which has 2 CPUs / 8GB RAM —
-insufficient to reliably complete a full OpenROAD build. Compile
-verification and the [end-to-end smoke test](../tests/test_end_to_end.sh)
-against the patched binary are the required next step before relying on
-these commands for real measurements.
+anywhere. Likely friction points, in rough order of suspicion: (a)
+`getRouterConfiguration()` visibility from the new SWIG `%inline` block —
+it's a public method on `TritonRoute` so this should be fine, but SWIG
+name resolution across the `drt::` namespace boundary is the first thing
+to check if `set_drt_cost_weights` fails to compile or register; (b) the
+`serialization.h` hunk — `RBA_NET_PRIORITY`/`RBA_FORCED_RIPUP_NETS` need
+`boost/serialization/unordered_map.hpp` (added) and must round-trip
+correctly if any other translation unit also serializes
+`RouterConfiguration` via a different Archive type than tested; (c) the
+`FlexDR_init.cpp` hunk assumes `getWorkerRegionQuery()` and
+`clearRouteConnFigs()` have the exact signatures used by the neighboring
+`initRipUpNetsFromMarkers()` it was modeled on — a compiler error here
+would point at a drt-internal API mismatch worth diffing against the
+current pinned commit again.
+
+### Verification checklist — what to send back
+
+Once it builds, this is what turns "the patch looks right" into "the patch
+works":
+
+1. **Build evidence**: `./build/src/openroad -version` output, and the
+   tail of the build log (or just "clean build, 0 errors" if true).
+2. **Tcl commands exist** — from an interactive `openroad` shell:
+   ```tcl
+   info commands set_drt_cost_weights
+   info commands set_drt_net_order
+   info commands set_drt_ripup_nets
+   ```
+   Each should return the command name, not an empty string.
+3. **The smoke test, for real**: run
+   [`tests/test_end_to_end.sh`](../tests/test_end_to_end.sh) with
+   `OPENROAD_BIN=/path/to/build/src/openroad` — it should now PASS (not
+   SKIP/exit 77) and produce a real routed DEF + metrics CSV on mini_test.
+4. **Cost weights actually bite** (Phase 2.4 of the current plan): route
+   mini_test twice with deliberately different `-via_cost` values via
+   `set_drt_cost_weights` and confirm the via count in the output DEF
+   changes. If it doesn't move, the hook isn't wired correctly even
+   though the command exists — this is the test that actually validates
+   the FlexDR_maze.cpp/FlexDR_init.cpp hunks, not just the SWIG plumbing.
+
+Send back whichever of these you get to (even just #1 and #2) and I'll
+pick up verification/Phase 2 from there.
 
 ## Commands
 
